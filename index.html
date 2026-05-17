@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>chat bubbles</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0b0d12;
+        --fg: #e6e8ec;
+        --fg-mute: #8b93a7;
+        --fg-dim: #5b6172;
+        --border: #232836;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: radial-gradient(ellipse at top, #11151f 0%, var(--bg) 60%);
+        color: var(--fg);
+        font-family: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        height: 100vh;
+        overflow: hidden;
+      }
+      header {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 5;
+        backdrop-filter: blur(12px);
+        background: rgba(11, 13, 18, 0.6);
+        border-bottom: 1px solid var(--border);
+        padding: 12px 24px;
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        pointer-events: none;
+      }
+      header > * { pointer-events: auto; }
+      header h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      header .meta { color: var(--fg-mute); font-size: 12px; }
+      header .spacer { flex: 1; pointer-events: none; }
+      button {
+        font: inherit;
+        background: rgba(22, 26, 34, 0.85);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 5px 14px;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      button:hover { background: #1d2230; border-color: #2e3346; }
+      button:disabled { opacity: 0.5; cursor: progress; }
+
+      canvas {
+        display: block;
+        position: fixed;
+        inset: 0;
+        cursor: default;
+      }
+      canvas.clickable { cursor: pointer; }
+      #close {
+        display: none;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        font-size: 16px;
+        line-height: 1;
+        background: rgba(22, 26, 34, 0.85);
+        color: var(--fg-mute);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      #close:hover { color: var(--fg); background: #1d2230; border-color: #2e3346; }
+      header.expanded #close { display: inline-flex; align-items: center; justify-content: center; }
+      header.expanded #meta { color: var(--fg); }
+    </style>
+  </head>
+  <body>
+    <header id="header">
+      <h1>chat bubbles</h1>
+      <button id="refresh">refresh</button>
+      <span class="meta" id="meta">loading…</span>
+      <span class="spacer"></span>
+      <button id="close" title="close">×</button>
+    </header>
+    <canvas id="c"></canvas>
+
+    <script>
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+      const meta = document.getElementById("meta");
+      const refreshBtn = document.getElementById("refresh");
+      const closeBtn = document.getElementById("close");
+      const header = document.getElementById("header");
+
+      let bubbles = [];
+      let dpr = window.devicePixelRatio || 1;
+      let W = 0, H = 0;
+      // Drill-down state.
+      let expandedKey = null;
+      let savedOverview = null;
+      let lastMeta = "";
+
+      function resize() {
+        dpr = window.devicePixelRatio || 1;
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.width = W + "px";
+        canvas.style.height = H + "px";
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        // Clamp bubble positions in case window shrunk.
+        for (const b of bubbles) {
+          b.x = Math.max(b.r, Math.min(W - b.r, b.x));
+          b.y = Math.max(b.r + 50, Math.min(H - b.r - 20, b.y));
+        }
+      }
+      window.addEventListener("resize", () => { resize(); draw(); });
+
+      function hash32(s) {
+        // FNV-1a; stable per-string 32-bit hash.
+        let h = 2166136261 >>> 0;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = Math.imul(h, 16777619) >>> 0;
+        }
+        return h;
+      }
+      function rand01(seed) {
+        return hash32(seed) / 0x100000000;
+      }
+      // Halton low-discrepancy sequence: well-distributed [0,1) for 2D placement.
+      function halton(i, base) {
+        let f = 1, r = 0;
+        while (i > 0) {
+          f /= base;
+          r += f * (i % base);
+          i = Math.floor(i / base);
+        }
+        return r;
+      }
+      function hueFor(s) {
+        return hash32(s) % 360;
+      }
+      function relTime(ms) {
+        const d = (Date.now() - ms) / 1000;
+        if (d < 60) return `${Math.floor(d)}s ago`;
+        if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+        if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+        const days = Math.floor(d / 86400);
+        if (days < 14) return `${days}d ago`;
+        return new Date(ms).toLocaleDateString();
+      }
+
+      // Group key: bubbles with the same key cluster together. `~` bubbles
+      // each get a unique key so they don't cluster.
+      function groupKey(b) {
+        return b.project === "~" ? `~:${b.id}` : b.cwd;
+      }
+
+      function buildBubbles(chats) {
+        const prev = new Map(bubbles.map((b) => [b.id, b]));
+        // Scale bubble size to roughly fit the count into the viewport.
+        // Aim to use ~70% of canvas area before overlap.
+        const baseArea = 250 * 130;
+        const budget = W * H * 0.55;
+        const scale = Math.max(
+          0.62,
+          Math.min(1, Math.sqrt(budget / Math.max(1, chats.length) / baseArea)),
+        );
+        // Deterministic cluster seeds via Halton (base 2 for x, base 3 for y).
+        // Hash of the cluster key picks the Halton index, which guarantees even
+        // 2D distribution across the canvas regardless of which keys are present.
+        const seeds = {};
+        const seedKey = (c) => (c.project === "~" ? `~:${c.id}` : c.cwd);
+        const xMargin = 180, yTop = 90, yBottom = 80;
+        const xRange = Math.max(100, W - xMargin * 2);
+        const yRange = Math.max(100, H - yTop - yBottom);
+        for (const c of chats) {
+          if (prev.has(c.id)) continue;
+          const k = seedKey(c);
+          if (!seeds[k]) {
+            const idx = (hash32(k) % 1024) + 1; // +1 to skip Halton(0) = 0
+            seeds[k] = {
+              x: xMargin + halton(idx, 2) * xRange,
+              y: yTop + halton(idx, 3) * yRange,
+            };
+          }
+        }
+        const next = chats.map((c) => {
+          // Rounded-rect dimensions. Width fixed-ish for readable wrapping;
+          // height grows with message count.
+          const w = (230 + Math.min(40, Math.log2((c.lineCount || 1) + 1) * 3)) * scale;
+          const h = (110 + Math.min(60, Math.log2((c.lineCount || 1) + 1) * 6)) * scale;
+          // Collision radius: average of half-dims keeps clusters tight while
+          // still giving inter-cluster bubbles breathing room.
+          const r = (w + h) / 4;
+          const existing = prev.get(c.id);
+          // Hue per cluster key: clusters share a color, ~ singletons each get
+          // their own. Deterministic per session id / cwd.
+          const hue = hueFor(seedKey(c));
+          if (existing) {
+            return Object.assign(existing, {
+              project: c.project, cwd: c.cwd, summary: c.summary,
+              groupTitle: c.groupTitle,
+              mtimeMs: c.mtimeMs, lineCount: c.lineCount, w, h, r, hue,
+            });
+          }
+          const seed = seeds[seedKey(c)];
+          // Deterministic per-bubble jitter from the chat id so same chat
+          // always lands in the same spot within its cluster.
+          const jx = (rand01(`jitter-x:${c.id}`) - 0.5) * 30;
+          const jy = (rand01(`jitter-y:${c.id}`) - 0.5) * 30;
+          return {
+            id: c.id,
+            project: c.project,
+            cwd: c.cwd,
+            groupTitle: c.groupTitle,
+            summary: c.summary,
+            mtimeMs: c.mtimeMs,
+            lineCount: c.lineCount,
+            w, h, r,
+            hue,
+            x: seed.x + jx,
+            y: seed.y + jy,
+            vx: 0,
+            vy: 0,
+            alpha: 1,
+          };
+        });
+        // Draw oldest first → newest on top. pickAt iterates reverse so
+        // topmost (newest) wins hit-testing too.
+        next.sort((a, b) => a.mtimeMs - b.mtimeMs);
+        bubbles = next;
+      }
+
+      function step() {
+        // Cluster centers (mean position of each group)
+        const groups = {};
+        for (const b of bubbles) {
+          const k = groupKey(b);
+          let g = groups[k];
+          if (!g) g = groups[k] = { x: 0, y: 0, n: 0 };
+          g.x += b.x; g.y += b.y; g.n++;
+        }
+        for (const k in groups) {
+          groups[k].x /= groups[k].n;
+          groups[k].y /= groups[k].n;
+        }
+
+        for (let i = 0; i < bubbles.length; i++) {
+          const a = bubbles[i];
+          // Attract to cluster center (only if cluster has 2+ members)
+          const g = groups[groupKey(a)];
+          if (g.n >= 2) {
+            const dx = g.x - a.x, dy = g.y - a.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 0.5) {
+              const f = Math.min(0.25, d * 0.006);
+              a.vx += (dx / d) * f;
+              a.vy += (dy / d) * f;
+            }
+          }
+          const aKey = groupKey(a);
+          const PAD = 16;
+          for (let j = i + 1; j < bubbles.length; j++) {
+            const b = bubbles[j];
+            const same = groupKey(b) === aKey;
+            const dx = b.x - a.x, dy = b.y - a.y;
+            if (same) {
+              // Stacked siblings — circular soft-overlap so newer can sit atop older.
+              const min = Math.min(a.r, b.r) * 0.4;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < min * min && d2 > 0.001) {
+                const d = Math.sqrt(d2);
+                const overlap = (min - d) / min;
+                const fx = (dx / d) * overlap * 0.15;
+                const fy = (dy / d) * overlap * 0.15;
+                a.vx -= fx; a.vy -= fy;
+                b.vx += fx; b.vy += fy;
+              }
+            } else {
+              // Different clusters — true AABB collision with padding. Push along
+              // the axis of smaller penetration (MTV) so they slide apart cleanly.
+              const overlapX = (a.w + b.w) / 2 + PAD - Math.abs(dx);
+              const overlapY = (a.h + b.h) / 2 + PAD - Math.abs(dy);
+              if (overlapX > 0 && overlapY > 0) {
+                const strength = 0.55;
+                if (overlapX < overlapY) {
+                  const f = (dx >= 0 ? 1 : -1) * overlapX * strength * 0.5;
+                  a.vx -= f; b.vx += f;
+                } else {
+                  const f = (dy >= 0 ? 1 : -1) * overlapY * strength * 0.5;
+                  a.vy -= f; b.vy += f;
+                }
+              }
+            }
+          }
+        }
+        // Integrate
+        for (const a of bubbles) {
+          // Damping + speed cap
+          a.vx *= 0.985; a.vy *= 0.985;
+          const sp = Math.hypot(a.vx, a.vy);
+          const cap = 1.4;
+          if (sp > cap) { a.vx = (a.vx / sp) * cap; a.vy = (a.vy / sp) * cap; }
+          a.x += a.vx; a.y += a.vy;
+          // Wall bounce
+          const topMargin = 60, bottomMargin = 30, sideMargin = 10;
+          if (a.x - a.r < sideMargin) { a.x = a.r + sideMargin; a.vx = Math.abs(a.vx) * 0.8; }
+          if (a.x + a.r > W - sideMargin) { a.x = W - a.r - sideMargin; a.vx = -Math.abs(a.vx) * 0.8; }
+          if (a.y - a.r < topMargin) { a.y = a.r + topMargin; a.vy = Math.abs(a.vy) * 0.8; }
+          if (a.y + a.r > H - bottomMargin) { a.y = H - a.r - bottomMargin; a.vy = -Math.abs(a.vy) * 0.8; }
+        }
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        const pad = 14;
+        const cornerR = 18;
+        // Render oldest first → newest on top.
+        const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
+        for (const b of list) {
+          ctx.globalAlpha = b.alpha ?? 1;
+          const x = b.x - b.w / 2;
+          const y = b.y - b.h / 2;
+          // Soft outer glow
+          const glow = ctx.createRadialGradient(b.x, b.y, b.r * 0.2, b.x, b.y, b.r * 1.4);
+          glow.addColorStop(0, `hsla(${b.hue}, 75%, 60%, 0.15)`);
+          glow.addColorStop(1, `hsla(${b.hue}, 75%, 60%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r * 1.4, 0, Math.PI * 2);
+          ctx.fill();
+          // Body
+          ctx.beginPath();
+          ctx.roundRect(x, y, b.w, b.h, cornerR);
+          ctx.fillStyle = `hsla(${b.hue}, 55%, 32%, 0.72)`;
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = `hsla(${b.hue}, 80%, 70%, 0.85)`;
+          ctx.stroke();
+          // Text — left-aligned
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          const innerW = b.w - pad * 2;
+          let cy = y + pad;
+          // Group title (Haiku-generated) — always reserves two lines, no ellipsis.
+          ctx.font = "600 13px ui-monospace, 'SF Mono', Menlo, monospace";
+          ctx.fillStyle = "rgba(245,247,252,0.97)";
+          const label = b.groupTitle || b.project;
+          const titleLines = wrapLines(label, innerW, 2, true);
+          ctx.fillText(titleLines[0] || "", x + pad, cy);
+          ctx.fillText(titleLines[1] || "", x + pad, cy + 16);
+          cy += 34;
+          // Summary, wrapped
+          ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(238,241,247,0.92)";
+          const footerH = 14;
+          const summaryArea = b.h - (cy - y) - pad - footerH;
+          const maxLines = Math.max(1, Math.floor(summaryArea / 15));
+          const lines = wrapLines(b.summary || "", innerW, maxLines);
+          const lineH = 15;
+          for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], x + pad, cy + i * lineH);
+          }
+          // Footer (bottom-left)
+          ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(220,224,234,0.55)";
+          const footerY = y + b.h - pad - 10;
+          ctx.fillText(`${b.lineCount} msg · ${relTime(b.mtimeMs)}`, x + pad, footerY);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function truncate(s, n) {
+        return s && s.length > n ? s.slice(0, n - 1) + "…" : s;
+      }
+
+      // Wrap text into up to maxLines, fitting within maxWidth.
+      // Uses the currently-set ctx.font for measurements.
+      function wrapLines(text, maxWidth, maxLines, noEllipsis) {
+        if (!text) return [];
+        const words = String(text).split(/\s+/).filter(Boolean);
+        const lines = [];
+        let cur = "";
+        for (const w of words) {
+          const probe = cur ? cur + " " + w : w;
+          if (ctx.measureText(probe).width <= maxWidth) {
+            cur = probe;
+          } else {
+            if (cur) lines.push(cur);
+            if (lines.length >= maxLines) break;
+            // Single word longer than maxWidth — hard-truncate it.
+            if (ctx.measureText(w).width > maxWidth) {
+              let chunk = w;
+              while (chunk.length > 1 && ctx.measureText(chunk + "…").width > maxWidth) {
+                chunk = chunk.slice(0, -1);
+              }
+              lines.push(chunk + "…");
+              cur = "";
+            } else {
+              cur = w;
+            }
+          }
+        }
+        if (cur && lines.length < maxLines) lines.push(cur);
+        if (lines.length > maxLines) lines.length = maxLines;
+        // If we truncated and ellipsis is allowed, mark the last line.
+        const usedAll = lines.length === maxLines &&
+          words.join(" ").length > lines.join(" ").length;
+        if (usedAll && !noEllipsis) {
+          let last = lines[maxLines - 1];
+          while (last.length > 0 && ctx.measureText(last + "…").width > maxWidth) {
+            last = last.slice(0, -1);
+          }
+          lines[maxLines - 1] = last.replace(/[\s,]+$/, "") + "…";
+        }
+        return lines;
+      }
+
+      // Position-correction pass: hard-separate inter-cluster bubbles by MTV
+      // until no overlap remains (or a few passes go by). Same-cluster overlap
+      // is preserved on purpose (stacking).
+      function correctPositions(maxPasses = 40) {
+        const PAD = 12;
+        for (let pass = 0; pass < maxPasses; pass++) {
+          let moved = 0;
+          for (let i = 0; i < bubbles.length; i++) {
+            const a = bubbles[i];
+            const aKey = groupKey(a);
+            for (let j = i + 1; j < bubbles.length; j++) {
+              const b = bubbles[j];
+              if (groupKey(b) === aKey) continue;
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const overlapX = (a.w + b.w) / 2 + PAD - Math.abs(dx);
+              const overlapY = (a.h + b.h) / 2 + PAD - Math.abs(dy);
+              if (overlapX > 0 && overlapY > 0) {
+                if (overlapX < overlapY) {
+                  const push = overlapX / 2 + 0.5;
+                  const sgn = dx >= 0 ? 1 : -1;
+                  a.x -= push * sgn; b.x += push * sgn;
+                } else {
+                  const push = overlapY / 2 + 0.5;
+                  const sgn = dy >= 0 ? 1 : -1;
+                  a.y -= push * sgn; b.y += push * sgn;
+                }
+                moved++;
+              }
+            }
+          }
+          // Wall clamp after pushing.
+          for (const b of bubbles) {
+            const margin = 60;
+            b.x = Math.max(b.w / 2 + 8, Math.min(W - b.w / 2 - 8, b.x));
+            b.y = Math.max(b.h / 2 + margin, Math.min(H - b.h / 2 - 20, b.y));
+          }
+          if (moved === 0) break;
+        }
+      }
+
+      // Run physics to steady state once, then freeze.
+      function settle(iterations = 600) {
+        for (let i = 0; i < iterations; i++) step();
+        correctPositions();
+        for (const b of bubbles) { b.vx = 0; b.vy = 0; }
+      }
+
+      function clusterMembers(key) {
+        if (key.startsWith("~:")) {
+          // Singleton ~ bubble (not a real cluster — no drill-down).
+          const id = key.slice(2);
+          return bubbles.filter((b) => b.id === id);
+        }
+        return bubbles.filter((b) => b.project !== "~" && b.cwd === key);
+      }
+
+      function visibleBubbles() {
+        // During animation, bubbles fading out (alpha > 0.01) still need drawing.
+        // Once an out-fade completes, alpha hits 0 and we skip them.
+        return bubbles.filter((b) => (b.alpha ?? 1) > 0.01);
+      }
+
+      function rectHit(px, py) {
+        // Visible bubbles, topmost first (newest drawn last).
+        const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
+        for (let i = list.length - 1; i >= 0; i--) {
+          const b = list[i];
+          if (
+            px >= b.x - b.w / 2 && px <= b.x + b.w / 2 &&
+            py >= b.y - b.h / 2 && py <= b.y + b.h / 2
+          ) return b;
+        }
+        return null;
+      }
+
+      function expandGroup(key) {
+        // Save overview positions/sizes so collapse restores exactly.
+        savedOverview = new Map(
+          bubbles.map((b) => [b.id, { x: b.x, y: b.y, w: b.w, h: b.h, r: b.r }]),
+        );
+        expandedKey = key;
+        const members = clusterMembers(key).slice().sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const memberIds = new Set(members.map((m) => m.id));
+        const n = members.length;
+        const topPad = 72, bottomPad = 30, gap = 8;
+        const availH = H - topPad - bottomPad;
+        const bw = Math.min(520, W * 0.5);
+        // Compact rows: prefer content-sized height; only shrink if many bubbles can't fit.
+        const idealH = (availH - gap * (n - 1)) / n;
+        const bh = Math.max(70, Math.min(108, idealH));
+        const startY = topPad;
+        const cx = W / 2;
+        for (let i = 0; i < n; i++) {
+          const m = members[i];
+          m.targetX = cx;
+          m.targetY = startY + i * (bh + gap) + bh / 2;
+          m.targetW = bw;
+          m.targetH = bh;
+          m.targetR = (bw + bh) / 4;
+          m.targetAlpha = 1;
+        }
+        // Non-members: fade out in place.
+        for (const b of bubbles) {
+          if (memberIds.has(b.id)) continue;
+          b.targetX = b.x; b.targetY = b.y;
+          b.targetW = b.w; b.targetH = b.h; b.targetR = b.r;
+          b.targetAlpha = 0;
+        }
+        updateChrome();
+        startAnim();
+      }
+
+      function collapse() {
+        if (savedOverview) {
+          for (const b of bubbles) {
+            const s = savedOverview.get(b.id);
+            if (s) {
+              b.targetX = s.x; b.targetY = s.y;
+              b.targetW = s.w; b.targetH = s.h; b.targetR = s.r;
+            }
+            b.targetAlpha = 1;
+          }
+          savedOverview = null;
+        }
+        expandedKey = null;
+        updateChrome();
+        startAnim();
+      }
+
+      // Animation: tween x/y/w/h/r/alpha toward target* on each bubble.
+      const EASE = 0.22;
+      let animRaf = 0;
+      function tickAnim() {
+        let stillAnimating = false;
+        for (const b of bubbles) {
+          const tx = b.targetX ?? b.x;
+          const ty = b.targetY ?? b.y;
+          const tw = b.targetW ?? b.w;
+          const th = b.targetH ?? b.h;
+          const tr = b.targetR ?? b.r;
+          const ta = b.targetAlpha ?? (b.alpha ?? 1);
+          b.x += (tx - b.x) * EASE;
+          b.y += (ty - b.y) * EASE;
+          b.w += (tw - b.w) * EASE;
+          b.h += (th - b.h) * EASE;
+          b.r += (tr - b.r) * EASE;
+          b.alpha = (b.alpha ?? 1) + (ta - (b.alpha ?? 1)) * EASE;
+          if (
+            Math.abs(tx - b.x) > 0.4 || Math.abs(ty - b.y) > 0.4 ||
+            Math.abs(tw - b.w) > 0.4 || Math.abs(th - b.h) > 0.4 ||
+            Math.abs(ta - b.alpha) > 0.005
+          ) {
+            stillAnimating = true;
+          } else {
+            b.x = tx; b.y = ty; b.w = tw; b.h = th; b.r = tr; b.alpha = ta;
+          }
+        }
+        draw();
+        if (stillAnimating) {
+          animRaf = requestAnimationFrame(tickAnim);
+        } else {
+          animRaf = 0;
+        }
+      }
+      function startAnim() {
+        if (!animRaf) animRaf = requestAnimationFrame(tickAnim);
+      }
+
+      function updateChrome() {
+        if (expandedKey) {
+          header.classList.add("expanded");
+          const members = clusterMembers(expandedKey);
+          const label = members[0]?.groupTitle || members[0]?.cwd || members[0]?.project || expandedKey;
+          meta.textContent = `${label}  ·  ${members.length} chats`;
+        } else {
+          header.classList.remove("expanded");
+          meta.textContent = lastMeta;
+        }
+      }
+
+      async function load() {
+        refreshBtn.disabled = true;
+        const started = Date.now();
+        meta.textContent = "loading…";
+        try {
+          const res = await fetch("/api/chats");
+          const data = await res.json();
+          buildBubbles(data.chats);
+          settle();
+          draw();
+          const ms = Date.now() - started;
+          const tag = data.hasApiKey ? "haiku summaries" : "heuristic summaries (set ANTHROPIC_API_KEY for haiku)";
+          lastMeta = `${data.chats.length} chats · ${tag} · ${ms}ms`;
+          if (!expandedKey) meta.textContent = lastMeta;
+        } catch (e) {
+          meta.textContent = "error: " + e.message;
+        } finally {
+          refreshBtn.disabled = false;
+        }
+      }
+
+      function bubbleGroupKey(b) {
+        return b.project === "~" ? `~:${b.id}` : b.cwd;
+      }
+
+      canvas.addEventListener("mousemove", (e) => {
+        const hit = rectHit(e.clientX, e.clientY);
+        // In overview, any bubble is clickable. In expanded view, click anywhere collapses.
+        canvas.classList.toggle("clickable", Boolean(expandedKey || hit));
+      });
+      canvas.addEventListener("click", (e) => {
+        const hit = rectHit(e.clientX, e.clientY);
+        if (expandedKey) {
+          collapse();
+          return;
+        }
+        if (!hit) return;
+        expandGroup(bubbleGroupKey(hit));
+      });
+      closeBtn.addEventListener("click", () => {
+        if (expandedKey) collapse();
+      });
+
+      refreshBtn.addEventListener("click", load);
+      resize();
+      load();
+    </script>
+  </body>
+</html>
