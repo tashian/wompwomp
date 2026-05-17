@@ -15,12 +15,16 @@ const PORT = Number(process.env.PORT) || 4711;
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 const CONCURRENCY = 4;
+// Cache schema v2: summaries store the title used at generation time and a
+// version marker. v1 entries (no `v` field) are treated as stale and regen'd
+// so the title-aware summaries take effect.
+const SUMMARY_VERSION = 2;
 
 let cache = { summaries: {}, groupTitles: {} };
 try {
   const raw = JSON.parse(readFileSync(CACHE_PATH, "utf8"));
   if (raw.summaries) cache = { groupTitles: {}, ...raw };
-  else cache = { summaries: raw, groupTitles: {} }; // migrate flat → nested
+  else cache = { summaries: raw, groupTitles: {} };
 } catch {}
 
 async function saveCache() {
@@ -28,20 +32,25 @@ async function saveCache() {
   await writeFile(CACHE_PATH, JSON.stringify(cache, null, 2));
 }
 
+let saveTimeout = null;
+function scheduleSave() {
+  if (saveTimeout) return;
+  saveTimeout = setTimeout(() => {
+    saveTimeout = null;
+    saveCache().catch((e) => console.error("saveCache", e));
+  }, 800);
+}
+
 // Convert project dir name like "-Users-carl-code-tsm" back to a friendly label.
-// The dir encoding replaces "/" with "-", so we can't perfectly invert, but the
-// last segment is a good label.
 function projectLabel(dirName) {
   const parts = dirName.split("-").filter(Boolean);
   if (parts.length === 0) return dirName;
   const last = parts[parts.length - 1];
-  // For "-Users-carl" → "~"
   if (parts.length <= 2 && parts[0] === "Users") return "~";
   return last;
 }
 
 function cwdPath(dirName) {
-  // Best-effort reconstruction: turn "-Users-carl-code-tsm" into "/Users/carl/code/tsm"
   return "/" + dirName.replace(/^-/, "").replace(/-/g, "/");
 }
 
@@ -75,7 +84,6 @@ async function listRecentChats(limit = Infinity) {
   return files.slice(0, limit);
 }
 
-// Walk a JSONL file, returning a compact transcript snippet and metadata.
 async function readSession(path) {
   const stream = createReadStream(path, { encoding: "utf8" });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -106,7 +114,6 @@ async function readSession(path) {
       text = text.trim();
     }
     if (!text) continue;
-    // Skip slash-command plumbing
     if (
       text.includes("<local-command-caveat>") ||
       text.includes("<local-command-stdout>") ||
@@ -129,18 +136,8 @@ async function readSession(path) {
   };
 }
 
-async function generateHaikuSummary(snippet) {
+async function callHaiku(prompt, maxTokens = 60) {
   if (!API_KEY) return null;
-  const body = {
-    model: HAIKU_MODEL,
-    max_tokens: 60,
-    messages: [
-      {
-        role: "user",
-        content: `Below is the start of a Claude Code chat session between Carl and Claude. Write a single concise phrase (max 16 words) describing what Carl is working on. Start with a verb in -ing form (e.g., "Building…", "Exploring…", "Designing…"). Do NOT start with a subject like "Carl", "Carl is", "The user", or "He"; the subject is implied. No preamble, no trailing period needed.\n\n<session>\n${snippet}\n</session>`,
-      },
-    ],
-  };
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -148,7 +145,11 @@ async function generateHaikuSummary(snippet) {
       "x-api-key": API_KEY,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model: HAIKU_MODEL,
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }],
+    }),
   });
   if (!res.ok) {
     const t = await res.text();
@@ -156,13 +157,30 @@ async function generateHaikuSummary(snippet) {
     return null;
   }
   const data = await res.json();
-  const text = data?.content?.[0]?.text?.trim();
-  return text || null;
+  return data?.content?.[0]?.text?.trim() || null;
+}
+
+async function generateTitleFromSnippets(snippets, memberCount) {
+  const sampled = snippets.map((s) => (s || "").slice(0, 1200));
+  const joined = sampled.map((s, i) => `--- session ${i + 1} ---\n${s}`).join("\n\n");
+  const prompt = memberCount === 1
+    ? `Below is the start of a Claude Code chat session.\n\n${joined}\n\nWrite a short 4-5 word title for this session. Title Case. No quotes, no preamble, no period.`
+    : `Below are excerpts from ${memberCount} Claude Code chat sessions that all happened in the same project directory.\n\n${joined}\n\nWrite a short 4-5 word title describing the overall project or topic the sessions share. Title Case. No quotes, no preamble, no period.`;
+  const text = await callHaiku(prompt, 40);
+  return text ? text.replace(/^["']|["']$/g, "") : null;
+}
+
+async function generateSummaryWithTitle(snippet, title) {
+  const titleClause = title ? ` titled "${title}"` : "";
+  const avoidanceClause = title
+    ? ` Do NOT repeat information already conveyed by the title — focus on additional specifics, decisions, technologies, or context the title doesn't capture.`
+    : "";
+  const prompt = `Below is the start of a Claude Code chat session${titleClause} between Carl and Claude. Write a single concise phrase (max 16 words) describing what's happening in this session.${avoidanceClause} Start with a verb in -ing form (e.g., "Building…", "Exploring…", "Designing…"). Do NOT start with a subject like "Carl", "Carl is", "The user", or "He"; the subject is implied. No preamble, no trailing period needed.\n\n<session>\n${snippet}\n</session>`;
+  return callHaiku(prompt, 60);
 }
 
 function stripSubject(s) {
   if (!s) return s;
-  // Match "Carl is", "Carl's", "The user is", "User is", "He is", etc.
   const m = s.match(/^(?:Carl(?:'s)?|The user|User|He)\s+(?:is\s+|has\s+been\s+|wants\s+to\s+)?(.+)$/);
   if (!m) return s;
   const rest = m[1];
@@ -174,48 +192,7 @@ function heuristicSummary(firstUserMsg) {
   return firstUserMsg.replace(/\s+/g, " ").slice(0, 140);
 }
 
-async function ensureSummary(chat) {
-  const cached = cache.summaries[chat.path];
-  if (cached && cached.lineCount === chat._session.lineCount && cached.summary) {
-    return cached.summary;
-  }
-  let summary = await generateHaikuSummary(chat._session.snippet);
-  if (!summary) summary = heuristicSummary(chat._session.firstUserMsg);
-  cache.summaries[chat.path] = {
-    lineCount: chat._session.lineCount,
-    summary,
-    generatedAt: Date.now(),
-  };
-  return summary;
-}
-
-async function generateGroupTitle(summaries) {
-  if (!API_KEY) return null;
-  const joined = summaries.map((s, i) => `${i + 1}. ${s}`).join("\n");
-  const prompt = summaries.length === 1
-    ? `A Claude Code chat session has this summary:\n\n${summaries[0]}\n\nWrite a short 4-5 word title for this session. Title case. No quotes, no preamble.`
-    : `These ${summaries.length} Claude Code chat sessions all happened in the same project directory:\n\n${joined}\n\nWrite a short 4-5 word title describing the overall project/topic the sessions share. Title case. No quotes, no preamble.`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: HAIKU_MODEL,
-      max_tokens: 40,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const text = data?.content?.[0]?.text?.trim().replace(/^["']|["']$/g, "");
-  return text || null;
-}
-
 function hashContent(s) {
-  // Cheap stable hash for cache keying.
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -224,13 +201,70 @@ function hashContent(s) {
   return h.toString(36);
 }
 
-async function ensureGroupTitle(key, memberSummaries) {
-  const contentKey = key + "|" + hashContent(memberSummaries.slice().sort().join(""));
-  const cached = cache.groupTitles[contentKey];
-  if (cached) return cached;
-  const title = await generateGroupTitle(memberSummaries);
-  if (title) cache.groupTitles[contentKey] = title;
-  return title;
+function titleCacheKey(groupKey, members) {
+  const digest = members
+    .map((m) => `${basename(m.path, ".jsonl")}:${m._session.lineCount}`)
+    .sort()
+    .join("|");
+  return `${groupKey}|${hashContent(digest)}`;
+}
+
+// In-flight dedup so concurrent /api/chats requests share a single Haiku call.
+const titleInFlight = new Map();
+const summaryInFlight = new Map();
+
+async function ensureTitleAsync(groupKey, members) {
+  const tkey = titleCacheKey(groupKey, members);
+  if (cache.groupTitles[tkey]) return cache.groupTitles[tkey];
+  if (titleInFlight.has(tkey)) return titleInFlight.get(tkey);
+  const p = (async () => {
+    try {
+      const snippets = members.map((m) => m._session.snippet || "");
+      const title = await generateTitleFromSnippets(snippets, members.length);
+      if (title) {
+        cache.groupTitles[tkey] = title;
+        scheduleSave();
+      }
+      return title;
+    } finally {
+      titleInFlight.delete(tkey);
+    }
+  })();
+  titleInFlight.set(tkey, p);
+  return p;
+}
+
+async function ensureSummaryAsync(chat, title) {
+  const key = `${chat.path}|${chat._session.lineCount}`;
+  if (summaryInFlight.has(key)) return summaryInFlight.get(key);
+  const cached = cache.summaries[chat.path];
+  if (
+    cached &&
+    cached.v === SUMMARY_VERSION &&
+    cached.lineCount === chat._session.lineCount &&
+    cached.summary
+  ) {
+    return cached.summary;
+  }
+  const p = (async () => {
+    try {
+      let summary = await generateSummaryWithTitle(chat._session.snippet, title);
+      if (!summary) summary = heuristicSummary(chat._session.firstUserMsg);
+      cache.summaries[chat.path] = {
+        v: SUMMARY_VERSION,
+        lineCount: chat._session.lineCount,
+        summary,
+        generationTitle: title || null,
+        generatedAt: Date.now(),
+      };
+      scheduleSave();
+      return summary;
+    } finally {
+      summaryInFlight.delete(key);
+    }
+  })();
+  summaryInFlight.set(key, p);
+  return p;
 }
 
 async function mapLimit(items, limit, fn) {
@@ -247,43 +281,60 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
+// Build the response and kick off background title/summary generation.
+// Returns immediately with whatever's already cached; the rest fills in over
+// subsequent /api/chats polls.
 async function buildChatsPayload() {
-  // No cap — return everything we can find.
   const candidates = await listRecentChats(Infinity);
   await mapLimit(candidates, 8, async (c) => {
     c._session = await readSession(c.path);
   });
   const chats = candidates.filter((c) => c._session.firstUserMsg);
-  await mapLimit(chats, CONCURRENCY, async (c) => {
-    c.summary = await ensureSummary(c);
-  });
-  // Group by cluster key (per-id for ~, per-cwd otherwise), then ensure title.
-  const chatsOut = chats.map((c) => ({
-    id: basename(c.path, ".jsonl"),
-    project: c.project,
-    cwd: c.cwd,
-    mtimeMs: c.mtimeMs,
-    lineCount: c._session.lineCount,
-    summary: stripSubject(c.summary),
-  }));
+
   const groups = new Map();
-  for (const c of chatsOut) {
-    const key = c.project === "~" ? `~:${c.id}` : c.cwd;
+  for (const c of chats) {
+    const key = c.project === "~" ? `~:${basename(c.path, ".jsonl")}` : c.cwd;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
   }
-  const titlesByKey = {};
-  await mapLimit(Array.from(groups.entries()), CONCURRENCY, async ([key, members]) => {
-    const title = await ensureGroupTitle(key, members.map((m) => m.summary || ""));
-    if (title) titlesByKey[key] = title;
+
+  // Initial response: cached state only — no awaits on generation work.
+  const out = chats.map((c) => {
+    const id = basename(c.path, ".jsonl");
+    const groupKey = c.project === "~" ? `~:${id}` : c.cwd;
+    const members = groups.get(groupKey);
+    const tkey = titleCacheKey(groupKey, members);
+    const cachedSummary = cache.summaries[c.path];
+    const summary =
+      cachedSummary &&
+      cachedSummary.v === SUMMARY_VERSION &&
+      cachedSummary.lineCount === c._session.lineCount
+        ? stripSubject(cachedSummary.summary)
+        : null;
+    return {
+      id,
+      project: c.project,
+      cwd: c.cwd,
+      mtimeMs: c.mtimeMs,
+      lineCount: c._session.lineCount,
+      groupKey,
+      groupTitle: cache.groupTitles[tkey] || null,
+      summary,
+    };
   });
-  await saveCache();
-  for (const c of chatsOut) {
-    const key = c.project === "~" ? `~:${c.id}` : c.cwd;
-    c.groupKey = key;
-    c.groupTitle = titlesByKey[key] || null;
-  }
-  return chatsOut;
+
+  // Kick off background generation. Titles first per group, then per-member
+  // summaries with the title in context. Don't await — the response already left.
+  (async () => {
+    await mapLimit(Array.from(groups.entries()), CONCURRENCY, async ([groupKey, members]) => {
+      const title = await ensureTitleAsync(groupKey, members);
+      await mapLimit(members, 3, async (chat) => {
+        await ensureSummaryAsync(chat, title);
+      });
+    });
+  })().catch((e) => console.error("background generation", e));
+
+  return out;
 }
 
 const INDEX_HTML = readFileSync(join(__dirname, "index.html"), "utf8");

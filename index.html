@@ -109,6 +109,8 @@
       let expandedKey = null;
       let savedOverview = null;
       let lastMeta = "";
+      // Poll loop while titles/summaries are still being generated.
+      let pollTimer = null;
 
       function resize() {
         dpr = window.devicePixelRatio || 1;
@@ -170,14 +172,10 @@
 
       function buildBubbles(chats) {
         const prev = new Map(bubbles.map((b) => [b.id, b]));
-        // Scale bubble size to roughly fit the count into the viewport.
-        // Aim to use ~70% of canvas area before overlap.
-        const baseArea = 250 * 130;
-        const budget = W * H * 0.55;
-        const scale = Math.max(
-          0.62,
-          Math.min(1, Math.sqrt(budget / Math.max(1, chats.length) / baseArea)),
-        );
+        // Uniform bubble size: fits 2-line title + 3-line summary + footer.
+        const BUBBLE_W = 260;
+        const BUBBLE_H = 132;
+        const BUBBLE_R = (BUBBLE_W + BUBBLE_H) / 4;
         // Deterministic cluster seeds via Halton (base 2 for x, base 3 for y).
         // Hash of the cluster key picks the Halton index, which guarantees even
         // 2D distribution across the canvas regardless of which keys are present.
@@ -200,11 +198,9 @@
         const next = chats.map((c) => {
           // Rounded-rect dimensions. Width fixed-ish for readable wrapping;
           // height grows with message count.
-          const w = (230 + Math.min(40, Math.log2((c.lineCount || 1) + 1) * 3)) * scale;
-          const h = (110 + Math.min(60, Math.log2((c.lineCount || 1) + 1) * 6)) * scale;
-          // Collision radius: average of half-dims keeps clusters tight while
-          // still giving inter-cluster bubbles breathing room.
-          const r = (w + h) / 4;
+          const w = BUBBLE_W;
+          const h = BUBBLE_H;
+          const r = BUBBLE_R;
           const existing = prev.get(c.id);
           // Hue per cluster key: clusters share a color, ~ singletons each get
           // their own. Deterministic per session id / cwd.
@@ -330,14 +326,24 @@
         const cornerR = 18;
         // Render oldest first → newest on top.
         const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
+        // Age fade: newer chats render fully saturated, older ones desaturate
+        // and lose glow/border emphasis. Square-root keeps recent stuff vivid
+        // while pushing 2+ week-old chats well into the background.
+        const now = Date.now();
+        const FADE_DAYS = 21;
         for (const b of list) {
           ctx.globalAlpha = b.alpha ?? 1;
+          const ageDays = (now - b.mtimeMs) / 86400000;
+          const fade = Math.min(1, Math.sqrt(Math.max(0, ageDays) / FADE_DAYS));
           const x = b.x - b.w / 2;
           const y = b.y - b.h / 2;
-          // Soft outer glow
+          // Age affects saturation only — geometry, opacity, lightness all fixed.
+          const bodySat = 55 - fade * 38;   // 55% → 17%
+          const borderSat = 80 - fade * 55; // 80% → 25%
+          const glowSat = 75 - fade * 55;   // 75% → 20%
           const glow = ctx.createRadialGradient(b.x, b.y, b.r * 0.2, b.x, b.y, b.r * 1.4);
-          glow.addColorStop(0, `hsla(${b.hue}, 75%, 60%, 0.15)`);
-          glow.addColorStop(1, `hsla(${b.hue}, 75%, 60%, 0)`);
+          glow.addColorStop(0, `hsla(${b.hue}, ${glowSat}%, 60%, 0.15)`);
+          glow.addColorStop(1, `hsla(${b.hue}, ${glowSat}%, 60%, 0)`);
           ctx.fillStyle = glow;
           ctx.beginPath();
           ctx.arc(b.x, b.y, b.r * 1.4, 0, Math.PI * 2);
@@ -345,10 +351,10 @@
           // Body
           ctx.beginPath();
           ctx.roundRect(x, y, b.w, b.h, cornerR);
-          ctx.fillStyle = `hsla(${b.hue}, 55%, 32%, 0.72)`;
+          ctx.fillStyle = `hsla(${b.hue}, ${bodySat}%, 32%, 0.72)`;
           ctx.fill();
           ctx.lineWidth = 1.5;
-          ctx.strokeStyle = `hsla(${b.hue}, 80%, 70%, 0.85)`;
+          ctx.strokeStyle = `hsla(${b.hue}, ${borderSat}%, 70%, 0.85)`;
           ctx.stroke();
           // Text — left-aligned
           ctx.textAlign = "left";
@@ -356,7 +362,7 @@
           const innerW = b.w - pad * 2;
           let cy = y + pad;
           // Group title (Haiku-generated) — always reserves two lines, no ellipsis.
-          ctx.font = "600 13px ui-monospace, 'SF Mono', Menlo, monospace";
+          ctx.font = "600 14px ui-sans-serif, -apple-system, system-ui, sans-serif";
           ctx.fillStyle = "rgba(245,247,252,0.97)";
           const label = b.groupTitle || b.project;
           const titleLines = wrapLines(label, innerW, 2, true);
@@ -622,12 +628,68 @@
           const ms = Date.now() - started;
           const tag = data.hasApiKey ? "haiku summaries" : "heuristic summaries (set ANTHROPIC_API_KEY for haiku)";
           lastMeta = `${data.chats.length} chats · ${tag} · ${ms}ms`;
-          if (!expandedKey) meta.textContent = lastMeta;
+          if (!expandedKey) updatePendingMeta(data.chats);
+          startPollingIfPending(data.chats);
         } catch (e) {
           meta.textContent = "error: " + e.message;
         } finally {
           refreshBtn.disabled = false;
         }
+      }
+
+      function pendingCounts(chats) {
+        let t = 0, s = 0;
+        for (const c of chats) {
+          if (!c.groupTitle) t++;
+          if (!c.summary) s++;
+        }
+        return { t, s };
+      }
+
+      function updatePendingMeta(chats) {
+        const { t, s } = pendingCounts(chats);
+        if (t === 0 && s === 0) {
+          meta.textContent = lastMeta;
+        } else {
+          const parts = [];
+          if (t > 0) parts.push(`${t} title${t === 1 ? "" : "s"}`);
+          if (s > 0) parts.push(`${s} summar${s === 1 ? "y" : "ies"}`);
+          meta.textContent = `${chats.length} chats · generating ${parts.join(" + ")}…`;
+        }
+      }
+
+      function startPollingIfPending(chats) {
+        const { t, s } = pendingCounts(chats);
+        if (t === 0 && s === 0) return;
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(pollOnce, 1500);
+      }
+
+      async function pollOnce() {
+        try {
+          const res = await fetch("/api/chats");
+          const data = await res.json();
+          let changed = false;
+          for (const c of data.chats) {
+            const b = bubbles.find((x) => x.id === c.id);
+            if (!b) continue;
+            if (c.groupTitle && c.groupTitle !== b.groupTitle) {
+              b.groupTitle = c.groupTitle;
+              changed = true;
+            }
+            if (c.summary && c.summary !== b.summary) {
+              b.summary = c.summary;
+              changed = true;
+            }
+          }
+          if (changed) draw();
+          if (!expandedKey) updatePendingMeta(data.chats);
+          const { t, s } = pendingCounts(data.chats);
+          if (t === 0 && s === 0) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        } catch {}
       }
 
       function bubbleGroupKey(b) {
