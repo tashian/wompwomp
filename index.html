@@ -2,97 +2,256 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>chat bubbles</title>
+    <title>wompwomp · an archive of conversations</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
       :root {
-        --bg: #0b0d12;
-        --fg: #e6e8ec;
-        --fg-mute: #8b93a7;
-        --fg-dim: #5b6172;
-        --border: #232836;
+        --paper:        #e8ddc4;
+        --paper-card:   #f1e8d2;
+        --paper-deep:   #ddd0b2;
+        --ink:          #1f1b15;
+        --ink-mute:     #5b5444;
+        --ink-faint:    #8a8270;
+        --ink-line:     #2a241a;
+        --accent:       #7a3034;
       }
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
         padding: 0;
-        background: radial-gradient(ellipse at top, #11151f 0%, var(--bg) 60%);
-        color: var(--fg);
-        font-family: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
-        font-size: 14px;
-        line-height: 1.45;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: "Fraunces", Georgia, serif;
+        font-optical-sizing: auto;
+        font-size: 15px;
+        line-height: 1.5;
         height: 100vh;
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
+      /* Layered paper: vignette + subtle grain over the cream base. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background-image:
+          radial-gradient(ellipse 80% 50% at 50% -10%, rgba(60, 40, 15, 0.10), transparent 70%),
+          radial-gradient(ellipse 60% 40% at 90% 100%, rgba(40, 30, 10, 0.07), transparent 70%),
+          url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.07 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      }
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 6;
+        box-shadow: inset 0 0 120px rgba(40, 28, 10, 0.16);
+      }
+
       header {
         position: fixed;
         top: 0; left: 0; right: 0;
-        z-index: 5;
-        backdrop-filter: blur(12px);
-        background: rgba(11, 13, 18, 0.6);
-        border-bottom: 1px solid var(--border);
-        padding: 12px 24px;
+        z-index: 7;
+        padding: 14px 28px 12px;
         display: flex;
-        align-items: baseline;
-        gap: 16px;
-        pointer-events: none;
+        align-items: center;
+        gap: 18px;
+        background:
+          linear-gradient(to bottom, rgba(232,221,196,0.94) 0%, rgba(232,221,196,0.78) 70%, rgba(232,221,196,0) 100%);
+        backdrop-filter: blur(2px);
+      }
+      header::after {
+        content: "";
+        position: absolute;
+        left: 28px; right: 28px; bottom: 6px;
+        height: 1px;
+        background: var(--ink-line);
+        opacity: 0.35;
       }
       header > * { pointer-events: auto; }
-      header h1 {
-        margin: 0;
+
+      .brand {
+        font-family: "Fraunces", Georgia, serif;
+        font-style: italic;
+        font-weight: 500;
+        font-size: 22px;
+        line-height: 1;
+        color: var(--ink);
+        font-variation-settings: "opsz" 24;
+        letter-spacing: -0.005em;
+        white-space: nowrap;
+      }
+      .mark {
+        font-family: "Fraunces", Georgia, serif;
         font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
+        color: var(--accent);
+        opacity: 0.7;
       }
-      header .meta { color: var(--fg-mute); font-size: 12px; }
-      header .spacer { flex: 1; pointer-events: none; }
+      .tagline {
+        font-family: "Fraunces", Georgia, serif;
+        font-style: italic;
+        font-weight: 300;
+        font-size: 13.5px;
+        color: var(--ink-mute);
+        white-space: nowrap;
+      }
+      .spacer { flex: 1; pointer-events: none; }
+      .status {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-mute);
+        white-space: nowrap;
+      }
+      .status .dot {
+        display: inline-block;
+        width: 4px; height: 4px;
+        background: var(--accent);
+        border-radius: 50%;
+        margin: 0 8px 1.5px;
+        vertical-align: middle;
+      }
+
       button {
-        font: inherit;
-        background: rgba(22, 26, 34, 0.85);
-        color: var(--fg);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 5px 14px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        background: transparent;
+        color: var(--ink-mute);
+        border: 1px solid transparent;
+        padding: 6px 10px 5px;
         cursor: pointer;
-        transition: background 0.15s, border-color 0.15s;
+        transition: color 0.15s, border-color 0.15s, background 0.15s;
+        border-radius: 0;
       }
-      button:hover { background: #1d2230; border-color: #2e3346; }
-      button:disabled { opacity: 0.5; cursor: progress; }
+      button:hover {
+        color: var(--ink);
+        border-color: var(--ink-line);
+        background: rgba(255, 248, 230, 0.4);
+      }
+      button:disabled { opacity: 0.45; cursor: progress; }
+
+      #refresh::before {
+        content: "↻";
+        font-family: "Fraunces", Georgia, serif;
+        font-style: normal;
+        margin-right: 6px;
+        font-size: 12px;
+        letter-spacing: 0;
+        display: inline-block;
+        transition: transform 0.4s ease;
+      }
+      #refresh:hover::before { transform: rotate(-90deg); }
+
+      #close {
+        display: none;
+        font-size: 14px;
+        letter-spacing: 0;
+        padding: 3px 8px;
+        font-family: "Fraunces", Georgia, serif;
+        color: var(--ink-mute);
+      }
+      header.expanded #close { display: inline-block; }
+      #close:hover { color: var(--accent); border-color: var(--accent); background: transparent; }
+
+      .edition {
+        position: fixed;
+        top: 22px;
+        right: 28px;
+        z-index: 4;
+        font-family: "Fraunces", Georgia, serif;
+        font-size: 11px;
+        font-style: italic;
+        color: var(--ink-faint);
+        text-align: right;
+        pointer-events: none;
+      }
+
+      .colophon {
+        position: fixed;
+        bottom: 14px;
+        left: 28px;
+        right: 28px;
+        z-index: 4;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        pointer-events: none;
+      }
+      .colophon .rule {
+        flex: 1;
+        height: 1px;
+        background: var(--ink-line);
+        opacity: 0.22;
+      }
+      .colophon em {
+        font-family: "Fraunces", Georgia, serif;
+        font-style: italic;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 11px;
+      }
 
       canvas {
         display: block;
         position: fixed;
         inset: 0;
+        z-index: 2;
         cursor: default;
       }
       canvas.clickable { cursor: pointer; }
-      #close {
-        display: none;
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        font-size: 16px;
-        line-height: 1;
-        background: rgba(22, 26, 34, 0.85);
-        color: var(--fg-mute);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        cursor: pointer;
+
+      header, .edition, .colophon, canvas {
+        opacity: 0;
+        animation: fadein 0.9s ease-out 0.05s forwards;
       }
-      #close:hover { color: var(--fg); background: #1d2230; border-color: #2e3346; }
-      header.expanded #close { display: inline-flex; align-items: center; justify-content: center; }
-      header.expanded #meta { color: var(--fg); }
+      .edition { animation-delay: 0.2s; }
+      canvas { animation-delay: 0.35s; }
+      .colophon { animation-delay: 0.55s; }
+      @keyframes fadein {
+        from { opacity: 0; transform: translateY(-2px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
     </style>
   </head>
   <body>
     <header id="header">
-      <h1>chat bubbles</h1>
-      <button id="refresh">refresh</button>
-      <span class="meta" id="meta">loading…</span>
+      <span class="brand">wompwomp</span>
+      <span class="mark">※</span>
+      <span class="tagline">an archive of conversations</span>
       <span class="spacer"></span>
-      <button id="close" title="close">×</button>
+      <span class="status" id="meta">gathering specimens…</span>
+      <button id="refresh">refresh</button>
+      <button id="close" title="close">× close</button>
     </header>
+
+    <div class="edition">
+      vol. i &nbsp;·&nbsp; <em>local edition</em>
+    </div>
+
     <canvas id="c"></canvas>
+
+    <div class="colophon">
+      <span>chats from <em>~/.claude/projects</em></span>
+      <span class="rule"></span>
+      <span>click a specimen to inspect</span>
+    </div>
 
     <script>
       const canvas = document.getElementById("c");
@@ -101,6 +260,23 @@
       const refreshBtn = document.getElementById("refresh");
       const closeBtn = document.getElementById("close");
       const header = document.getElementById("header");
+
+      // Curated herbarium palette: 8 muted inks. Cluster key → one entry.
+      const PALETTE = [
+        { name: "moss",    ink: "#5a6b3a" },
+        { name: "terra",   ink: "#a85436" },
+        { name: "indigo",  ink: "#3a4a73" },
+        { name: "ochre",   ink: "#8e6420" },
+        { name: "oxblood", ink: "#7a3034" },
+        { name: "plum",    ink: "#6b3e5e" },
+        { name: "slate",   ink: "#3f4a55" },
+        { name: "sage",    ink: "#5e6e4e" },
+      ];
+
+      const PAPER_CARD = "#f1e8d2";
+      const INK = "#1f1b15";
+      const INK_MUTE = "#5b5444";
+      const INK_FAINT = "#8a8270";
 
       let bubbles = [];
       let dpr = window.devicePixelRatio || 1;
@@ -111,6 +287,12 @@
       let lastMeta = "";
       // Poll loop while titles/summaries are still being generated.
       let pollTimer = null;
+      // Expanded-view layout + scroll state.
+      let expandedLayout = null;
+      let expandedScrollOffset = 0;
+      let expandedScrollMax = 0;
+      let hoveredId = null;
+      let fontsReady = false;
 
       function resize() {
         dpr = window.devicePixelRatio || 1;
@@ -138,10 +320,7 @@
         }
         return h;
       }
-      function rand01(seed) {
-        return hash32(seed) / 0x100000000;
-      }
-      // Halton low-discrepancy sequence: well-distributed [0,1) for 2D placement.
+      function rand01(seed) { return hash32(seed) / 0x100000000; }
       function halton(i, base) {
         let f = 1, r = 0;
         while (i > 0) {
@@ -151,36 +330,32 @@
         }
         return r;
       }
-      function hueFor(s) {
-        return hash32(s) % 360;
+      function paletteFor(s) { return PALETTE[hash32(s) % PALETTE.length]; }
+      function specimenNumberFor(id) {
+        return String((hash32(id) % 999) + 1).padStart(3, "0");
       }
       function relTime(ms) {
         const d = (Date.now() - ms) / 1000;
-        if (d < 60) return `${Math.floor(d)}s ago`;
-        if (d < 3600) return `${Math.floor(d / 60)}m ago`;
-        if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+        if (d < 60) return `${Math.floor(d)}s`;
+        if (d < 3600) return `${Math.floor(d / 60)}m`;
+        if (d < 86400) return `${Math.floor(d / 3600)}h`;
         const days = Math.floor(d / 86400);
-        if (days < 14) return `${days}d ago`;
+        if (days < 14) return `${days}d`;
         return new Date(ms).toLocaleDateString();
       }
 
-      // Group key: bubbles with the same key cluster together. `~` bubbles
-      // each get a unique key so they don't cluster.
-      function groupKey(b) {
-        return b.project === "~" ? `~:${b.id}` : b.cwd;
-      }
+      function groupKey(b) { return b.projectTag || b.cwd; }
 
       function buildBubbles(chats) {
         const prev = new Map(bubbles.map((b) => [b.id, b]));
-        // Uniform bubble size: fits 2-line title + 3-line summary + footer.
-        const BUBBLE_W = 260;
-        const BUBBLE_H = 132;
-        const BUBBLE_R = (BUBBLE_W + BUBBLE_H) / 4;
-        // Deterministic cluster seeds via Halton (base 2 for x, base 3 for y).
-        // Hash of the cluster key picks the Halton index, which guarantees even
-        // 2D distribution across the canvas regardless of which keys are present.
+        const baseArea = 250 * 130;
+        const budget = W * H * 0.55;
+        const scale = Math.max(
+          0.62,
+          Math.min(1, Math.sqrt(budget / Math.max(1, chats.length) / baseArea)),
+        );
         const seeds = {};
-        const seedKey = (c) => (c.project === "~" ? `~:${c.id}` : c.cwd);
+        const seedKey = (c) => c.projectTag || c.cwd;
         const xMargin = 180, yTop = 90, yBottom = 80;
         const xRange = Math.max(100, W - xMargin * 2);
         const yRange = Math.max(100, H - yTop - yBottom);
@@ -188,7 +363,7 @@
           if (prev.has(c.id)) continue;
           const k = seedKey(c);
           if (!seeds[k]) {
-            const idx = (hash32(k) % 1024) + 1; // +1 to skip Halton(0) = 0
+            const idx = (hash32(k) % 1024) + 1;
             seeds[k] = {
               x: xMargin + halton(idx, 2) * xRange,
               y: yTop + halton(idx, 3) * yRange,
@@ -196,52 +371,42 @@
           }
         }
         const next = chats.map((c) => {
-          // Rounded-rect dimensions. Width fixed-ish for readable wrapping;
-          // height grows with message count.
-          const w = BUBBLE_W;
-          const h = BUBBLE_H;
-          const r = BUBBLE_R;
+          const w = (240 + Math.min(40, Math.log2((c.lineCount || 1) + 1) * 3)) * scale;
+          const h = (118 + Math.min(60, Math.log2((c.lineCount || 1) + 1) * 6)) * scale;
+          const r = (w + h) / 4;
           const existing = prev.get(c.id);
-          // Hue per cluster key: clusters share a color, ~ singletons each get
-          // their own. Deterministic per session id / cwd.
-          const hue = hueFor(seedKey(c));
+          const pal = paletteFor(seedKey(c));
           if (existing) {
             return Object.assign(existing, {
-              project: c.project, cwd: c.cwd, summary: c.summary,
-              groupTitle: c.groupTitle,
-              mtimeMs: c.mtimeMs, lineCount: c.lineCount, w, h, r, hue,
+              project: c.project, projectTag: c.projectTag, cwd: c.cwd,
+              summary: c.summary, groupTitle: c.groupTitle,
+              mtimeMs: c.mtimeMs, lineCount: c.lineCount, w, h, r, pal,
             });
           }
           const seed = seeds[seedKey(c)];
-          // Deterministic per-bubble jitter from the chat id so same chat
-          // always lands in the same spot within its cluster.
           const jx = (rand01(`jitter-x:${c.id}`) - 0.5) * 30;
           const jy = (rand01(`jitter-y:${c.id}`) - 0.5) * 30;
           return {
             id: c.id,
             project: c.project,
+            projectTag: c.projectTag,
             cwd: c.cwd,
             groupTitle: c.groupTitle,
             summary: c.summary,
             mtimeMs: c.mtimeMs,
             lineCount: c.lineCount,
-            w, h, r,
-            hue,
+            w, h, r, pal,
             x: seed.x + jx,
             y: seed.y + jy,
-            vx: 0,
-            vy: 0,
+            vx: 0, vy: 0,
             alpha: 1,
           };
         });
-        // Draw oldest first → newest on top. pickAt iterates reverse so
-        // topmost (newest) wins hit-testing too.
         next.sort((a, b) => a.mtimeMs - b.mtimeMs);
         bubbles = next;
       }
 
       function step() {
-        // Cluster centers (mean position of each group)
         const groups = {};
         for (const b of bubbles) {
           const k = groupKey(b);
@@ -256,7 +421,6 @@
 
         for (let i = 0; i < bubbles.length; i++) {
           const a = bubbles[i];
-          // Attract to cluster center (only if cluster has 2+ members)
           const g = groups[groupKey(a)];
           if (g.n >= 2) {
             const dx = g.x - a.x, dy = g.y - a.y;
@@ -274,7 +438,6 @@
             const same = groupKey(b) === aKey;
             const dx = b.x - a.x, dy = b.y - a.y;
             if (same) {
-              // Stacked siblings — circular soft-overlap so newer can sit atop older.
               const min = Math.min(a.r, b.r) * 0.4;
               const d2 = dx * dx + dy * dy;
               if (d2 < min * min && d2 > 0.001) {
@@ -286,8 +449,6 @@
                 b.vx += fx; b.vy += fy;
               }
             } else {
-              // Different clusters — true AABB collision with padding. Push along
-              // the axis of smaller penetration (MTV) so they slide apart cleanly.
               const overlapX = (a.w + b.w) / 2 + PAD - Math.abs(dx);
               const overlapY = (a.h + b.h) / 2 + PAD - Math.abs(dy);
               if (overlapX > 0 && overlapY > 0) {
@@ -303,15 +464,12 @@
             }
           }
         }
-        // Integrate
         for (const a of bubbles) {
-          // Damping + speed cap
           a.vx *= 0.985; a.vy *= 0.985;
           const sp = Math.hypot(a.vx, a.vy);
           const cap = 1.4;
           if (sp > cap) { a.vx = (a.vx / sp) * cap; a.vy = (a.vy / sp) * cap; }
           a.x += a.vx; a.y += a.vy;
-          // Wall bounce
           const topMargin = 60, bottomMargin = 30, sideMargin = 10;
           if (a.x - a.r < sideMargin) { a.x = a.r + sideMargin; a.vx = Math.abs(a.vx) * 0.8; }
           if (a.x + a.r > W - sideMargin) { a.x = W - a.r - sideMargin; a.vx = -Math.abs(a.vx) * 0.8; }
@@ -320,10 +478,14 @@
         }
       }
 
+      function setLetterSpacing(v) {
+        try { ctx.letterSpacing = v; } catch { /* noop */ }
+      }
+
       function draw() {
         ctx.clearRect(0, 0, W, H);
         const pad = 14;
-        const cornerR = 18;
+        const cornerR = 4;
         // Render oldest first → newest on top.
         const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
         // Age fade: newer chats render fully saturated, older ones desaturate
@@ -337,60 +499,94 @@
           const fade = Math.min(1, Math.sqrt(Math.max(0, ageDays) / FADE_DAYS));
           const x = b.x - b.w / 2;
           const y = b.y - b.h / 2;
-          // Age affects saturation only — geometry, opacity, lightness all fixed.
-          const bodySat = 55 - fade * 38;   // 55% → 17%
-          const borderSat = 80 - fade * 55; // 80% → 25%
-          const glowSat = 75 - fade * 55;   // 75% → 20%
-          const glow = ctx.createRadialGradient(b.x, b.y, b.r * 0.2, b.x, b.y, b.r * 1.4);
-          glow.addColorStop(0, `hsla(${b.hue}, ${glowSat}%, 60%, 0.15)`);
-          glow.addColorStop(1, `hsla(${b.hue}, ${glowSat}%, 60%, 0)`);
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.r * 1.4, 0, Math.PI * 2);
-          ctx.fill();
-          // Body
+          const hovered = hoveredId === b.id && !expandedKey;
+          const ink = b.pal.ink;
+
+          // Soft paper drop shadow.
+          ctx.shadowColor = "rgba(40, 28, 10, 0.18)";
+          ctx.shadowBlur = hovered ? 14 : 8;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = hovered ? 4 : 2;
+
+          // Card body — tinted cream paper.
           ctx.beginPath();
           ctx.roundRect(x, y, b.w, b.h, cornerR);
-          ctx.fillStyle = `hsla(${b.hue}, ${bodySat}%, 32%, 0.72)`;
+          ctx.fillStyle = PAPER_CARD;
           ctx.fill();
-          ctx.lineWidth = 1.5;
-          ctx.strokeStyle = `hsla(${b.hue}, ${borderSat}%, 70%, 0.85)`;
+
+          // Reset shadow before strokes/text so they don't smear.
+          ctx.shadowColor = "transparent";
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetY = 0;
+
+          // Hairline border in the cluster's ink. Older chats fade out gently
+          // so the recent specimens read as more vivid on the page.
+          ctx.beginPath();
+          ctx.roundRect(x + 0.5, y + 0.5, b.w - 1, b.h - 1, cornerR);
+          ctx.lineWidth = hovered ? 1.6 : 1;
+          ctx.strokeStyle = ink;
+          ctx.globalAlpha = (b.alpha ?? 1) * (hovered ? 0.95 : 0.7) * (1 - fade * 0.55);
           ctx.stroke();
-          // Text — left-aligned
+          ctx.globalAlpha = b.alpha ?? 1;
+
+          // Eyebrow underline (small accent rule below the eyebrow text).
+          ctx.fillStyle = ink;
+          ctx.globalAlpha = (b.alpha ?? 1) * 0.85;
+          ctx.fillRect(x + pad, y + pad + 14, 18, 1);
+          ctx.globalAlpha = b.alpha ?? 1;
+
+          // Top-right corner marker — small filled square in cluster ink.
+          ctx.fillStyle = ink;
+          ctx.fillRect(x + b.w - pad - 5, y + pad - 1, 5, 5);
+
+          // --- Text ---
           ctx.textAlign = "left";
           ctx.textBaseline = "top";
           const innerW = b.w - pad * 2;
-          let cy = y + pad;
-          // Group title (Haiku-generated) — always reserves two lines, no ellipsis.
-          ctx.font = "600 14px ui-sans-serif, -apple-system, system-ui, sans-serif";
-          ctx.fillStyle = "rgba(245,247,252,0.97)";
+
+          // Eyebrow — tracked small-caps family name + "group".
+          ctx.font = "500 9px 'JetBrains Mono', ui-monospace, monospace";
+          setLetterSpacing("0.18em");
+          ctx.fillStyle = ink;
+          ctx.globalAlpha = (b.alpha ?? 1) * 0.9;
+          const eyebrow = (b.pal.name + " · group").toUpperCase();
+          ctx.fillText(eyebrow, x + pad, y + pad);
+          ctx.globalAlpha = b.alpha ?? 1;
+          setLetterSpacing("0px");
+
+          // Title — Fraunces italic, ink, up to 2 lines.
+          let cy = y + pad + 22;
+          ctx.font = "italic 500 15px 'Fraunces', Georgia, serif";
+          ctx.fillStyle = INK;
           const label = b.groupTitle || b.project;
           const titleLines = wrapLines(label, innerW, 2, true);
           ctx.fillText(titleLines[0] || "", x + pad, cy);
-          ctx.fillText(titleLines[1] || "", x + pad, cy + 16);
-          cy += 34;
-          // Summary, wrapped
-          ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-          ctx.fillStyle = "rgba(238,241,247,0.92)";
-          const footerH = 14;
+          if (titleLines[1]) ctx.fillText(titleLines[1], x + pad, cy + 18);
+          cy += titleLines[1] ? 38 : 22;
+
+          // Summary — Fraunces regular, muted ink.
+          ctx.font = "400 12px 'Fraunces', Georgia, serif";
+          ctx.fillStyle = INK_MUTE;
+          const footerH = 16;
           const summaryArea = b.h - (cy - y) - pad - footerH;
-          const maxLines = Math.max(1, Math.floor(summaryArea / 15));
-          const lines = wrapLines(b.summary || "", innerW, maxLines);
           const lineH = 15;
+          const maxLines = Math.max(1, Math.floor(summaryArea / lineH));
+          const lines = wrapLines(b.summary || "", innerW, maxLines);
           for (let i = 0; i < lines.length; i++) {
             ctx.fillText(lines[i], x + pad, cy + i * lineH);
           }
-          // Footer (bottom-left)
-          ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
-          ctx.fillStyle = "rgba(220,224,234,0.55)";
-          const footerY = y + b.h - pad - 10;
-          ctx.fillText(`${b.lineCount} msg · ${relTime(b.mtimeMs)}`, x + pad, footerY);
+
+          // Footer — monospace tracked, № NNN · N MSG · NT
+          ctx.font = "500 9px 'JetBrains Mono', ui-monospace, monospace";
+          setLetterSpacing("0.14em");
+          ctx.fillStyle = INK_FAINT;
+          const footerY = y + b.h - pad - 8;
+          const num = specimenNumberFor(b.id);
+          const t = relTime(b.mtimeMs).toUpperCase();
+          ctx.fillText(`№ ${num} · ${b.lineCount} MSG · ${t}`, x + pad, footerY);
+          setLetterSpacing("0px");
         }
         ctx.globalAlpha = 1;
-      }
-
-      function truncate(s, n) {
-        return s && s.length > n ? s.slice(0, n - 1) + "…" : s;
       }
 
       // Wrap text into up to maxLines, fitting within maxWidth.
@@ -407,7 +603,6 @@
           } else {
             if (cur) lines.push(cur);
             if (lines.length >= maxLines) break;
-            // Single word longer than maxWidth — hard-truncate it.
             if (ctx.measureText(w).width > maxWidth) {
               let chunk = w;
               while (chunk.length > 1 && ctx.measureText(chunk + "…").width > maxWidth) {
@@ -422,7 +617,6 @@
         }
         if (cur && lines.length < maxLines) lines.push(cur);
         if (lines.length > maxLines) lines.length = maxLines;
-        // If we truncated and ellipsis is allowed, mark the last line.
         const usedAll = lines.length === maxLines &&
           words.join(" ").length > lines.join(" ").length;
         if (usedAll && !noEllipsis) {
@@ -435,9 +629,6 @@
         return lines;
       }
 
-      // Position-correction pass: hard-separate inter-cluster bubbles by MTV
-      // until no overlap remains (or a few passes go by). Same-cluster overlap
-      // is preserved on purpose (stacking).
       function correctPositions(maxPasses = 40) {
         const PAD = 12;
         for (let pass = 0; pass < maxPasses; pass++) {
@@ -465,7 +656,6 @@
               }
             }
           }
-          // Wall clamp after pushing.
           for (const b of bubbles) {
             const margin = 60;
             b.x = Math.max(b.w / 2 + 8, Math.min(W - b.w / 2 - 8, b.x));
@@ -475,7 +665,6 @@
         }
       }
 
-      // Run physics to steady state once, then freeze.
       function settle(iterations = 600) {
         for (let i = 0; i < iterations; i++) step();
         correctPositions();
@@ -483,22 +672,14 @@
       }
 
       function clusterMembers(key) {
-        if (key.startsWith("~:")) {
-          // Singleton ~ bubble (not a real cluster — no drill-down).
-          const id = key.slice(2);
-          return bubbles.filter((b) => b.id === id);
-        }
-        return bubbles.filter((b) => b.project !== "~" && b.cwd === key);
+        return bubbles.filter((b) => groupKey(b) === key);
       }
 
       function visibleBubbles() {
-        // During animation, bubbles fading out (alpha > 0.01) still need drawing.
-        // Once an out-fade completes, alpha hits 0 and we skip them.
         return bubbles.filter((b) => (b.alpha ?? 1) > 0.01);
       }
 
       function rectHit(px, py) {
-        // Visible bubbles, topmost first (newest drawn last).
         const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
         for (let i = list.length - 1; i >= 0; i--) {
           const b = list[i];
@@ -511,7 +692,6 @@
       }
 
       function expandGroup(key) {
-        // Save overview positions/sizes so collapse restores exactly.
         savedOverview = new Map(
           bubbles.map((b) => [b.id, { x: b.x, y: b.y, w: b.w, h: b.h, r: b.r }]),
         );
@@ -519,24 +699,18 @@
         const members = clusterMembers(key).slice().sort((a, b) => b.mtimeMs - a.mtimeMs);
         const memberIds = new Set(members.map((m) => m.id));
         const n = members.length;
-        const topPad = 72, bottomPad = 30, gap = 8;
+        const topPad = 90, bottomPad = 50, gap = 10;
         const availH = H - topPad - bottomPad;
-        const bw = Math.min(520, W * 0.5);
-        // Compact rows: prefer content-sized height; only shrink if many bubbles can't fit.
+        const bw = Math.min(560, W * 0.55);
         const idealH = (availH - gap * (n - 1)) / n;
-        const bh = Math.max(70, Math.min(108, idealH));
+        const bh = Math.max(78, Math.min(118, idealH));
         const startY = topPad;
         const cx = W / 2;
-        for (let i = 0; i < n; i++) {
-          const m = members[i];
-          m.targetX = cx;
-          m.targetY = startY + i * (bh + gap) + bh / 2;
-          m.targetW = bw;
-          m.targetH = bh;
-          m.targetR = (bw + bh) / 4;
-          m.targetAlpha = 1;
-        }
-        // Non-members: fade out in place.
+        const totalH = n * bh + Math.max(0, n - 1) * gap;
+        expandedScrollOffset = 0;
+        expandedScrollMax = Math.max(0, totalH - availH);
+        expandedLayout = { members, memberIds, n, bh, gap, startY, cx, bw };
+        applyExpandedLayout();
         for (const b of bubbles) {
           if (memberIds.has(b.id)) continue;
           b.targetX = b.x; b.targetY = b.y;
@@ -545,6 +719,20 @@
         }
         updateChrome();
         startAnim();
+      }
+
+      function applyExpandedLayout() {
+        if (!expandedLayout) return;
+        const { members, n, bh, gap, startY, cx, bw } = expandedLayout;
+        for (let i = 0; i < n; i++) {
+          const m = members[i];
+          m.targetX = cx;
+          m.targetY = startY + i * (bh + gap) + bh / 2 - expandedScrollOffset;
+          m.targetW = bw;
+          m.targetH = bh;
+          m.targetR = (bw + bh) / 4;
+          m.targetAlpha = 1;
+        }
       }
 
       function collapse() {
@@ -560,11 +748,13 @@
           savedOverview = null;
         }
         expandedKey = null;
+        expandedLayout = null;
+        expandedScrollOffset = 0;
+        expandedScrollMax = 0;
         updateChrome();
         startAnim();
       }
 
-      // Animation: tween x/y/w/h/r/alpha toward target* on each bubble.
       const EASE = 0.22;
       let animRaf = 0;
       function tickAnim() {
@@ -607,27 +797,44 @@
         if (expandedKey) {
           header.classList.add("expanded");
           const members = clusterMembers(expandedKey);
-          const label = members[0]?.groupTitle || members[0]?.cwd || members[0]?.project || expandedKey;
-          meta.textContent = `${label}  ·  ${members.length} chats`;
+          const label = members[0]?.groupTitle || members[0]?.projectTag || members[0]?.cwd || members[0]?.project || expandedKey;
+          meta.innerHTML =
+            `<span style="color:var(--ink); letter-spacing:0.04em">${escapeHtml(label)}</span>` +
+            `<span class="dot"></span>${members.length} chats`;
         } else {
           header.classList.remove("expanded");
-          meta.textContent = lastMeta;
+          meta.innerHTML = lastMeta;
         }
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        }[c]));
       }
 
       async function load() {
         refreshBtn.disabled = true;
         const started = Date.now();
-        meta.textContent = "loading…";
+        meta.textContent = "gathering specimens…";
         try {
           const res = await fetch("/api/chats");
           const data = await res.json();
           buildBubbles(data.chats);
           settle();
+          // Wait for the variable fonts on first paint so the canvas doesn't
+          // draw with a fallback that then snaps to Fraunces.
+          if (!fontsReady) {
+            try { await document.fonts.ready; } catch {}
+            fontsReady = true;
+          }
           draw();
           const ms = Date.now() - started;
-          const tag = data.hasApiKey ? "haiku summaries" : "heuristic summaries (set ANTHROPIC_API_KEY for haiku)";
-          lastMeta = `${data.chats.length} chats · ${tag} · ${ms}ms`;
+          const tag = data.hasApiKey
+            ? "haiku summaries"
+            : "heuristic summaries (set ANTHROPIC_API_KEY for haiku)";
+          lastMeta =
+            `${data.chats.length} specimens<span class="dot"></span>${tag}<span class="dot"></span>${ms}ms`;
           if (!expandedKey) updatePendingMeta(data.chats);
           startPollingIfPending(data.chats);
         } catch (e) {
@@ -649,13 +856,14 @@
       function updatePendingMeta(chats) {
         const { t, s } = pendingCounts(chats);
         if (t === 0 && s === 0) {
-          meta.textContent = lastMeta;
-        } else {
-          const parts = [];
-          if (t > 0) parts.push(`${t} title${t === 1 ? "" : "s"}`);
-          if (s > 0) parts.push(`${s} summar${s === 1 ? "y" : "ies"}`);
-          meta.textContent = `${chats.length} chats · generating ${parts.join(" + ")}…`;
+          meta.innerHTML = lastMeta;
+          return;
         }
+        const parts = [];
+        if (t > 0) parts.push(`${t} title${t === 1 ? "" : "s"}`);
+        if (s > 0) parts.push(`${s} summar${s === 1 ? "y" : "ies"}`);
+        meta.innerHTML =
+          `${chats.length} specimens<span class="dot"></span>generating ${parts.join(" + ")}…`;
       }
 
       function startPollingIfPending(chats) {
@@ -692,23 +900,41 @@
         } catch {}
       }
 
-      function bubbleGroupKey(b) {
-        return b.project === "~" ? `~:${b.id}` : b.cwd;
-      }
+      canvas.addEventListener("wheel", (e) => {
+        if (!expandedKey || expandedScrollMax <= 0 || !expandedLayout) return;
+        e.preventDefault();
+        const prev = expandedScrollOffset;
+        expandedScrollOffset = Math.max(
+          0,
+          Math.min(expandedScrollMax, expandedScrollOffset + e.deltaY),
+        );
+        if (expandedScrollOffset === prev) return;
+        applyExpandedLayout();
+        // Snap expanded members to their new targets so scroll feels direct.
+        for (const m of expandedLayout.members) {
+          m.y = m.targetY;
+          m.vy = 0;
+        }
+        draw();
+      }, { passive: false });
 
       canvas.addEventListener("mousemove", (e) => {
         const hit = rectHit(e.clientX, e.clientY);
-        // In overview, any bubble is clickable. In expanded view, click anywhere collapses.
         canvas.classList.toggle("clickable", Boolean(expandedKey || hit));
+        const newId = hit && !expandedKey ? hit.id : null;
+        if (newId !== hoveredId) {
+          hoveredId = newId;
+          draw();
+        }
+      });
+      canvas.addEventListener("mouseleave", () => {
+        if (hoveredId !== null) { hoveredId = null; draw(); }
       });
       canvas.addEventListener("click", (e) => {
         const hit = rectHit(e.clientX, e.clientY);
-        if (expandedKey) {
-          collapse();
-          return;
-        }
+        if (expandedKey) { collapse(); return; }
         if (!hit) return;
-        expandGroup(bubbleGroupKey(hit));
+        expandGroup(groupKey(hit));
       });
       closeBtn.addEventListener("click", () => {
         if (expandedKey) collapse();

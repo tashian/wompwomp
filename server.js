@@ -91,9 +91,9 @@ async function readSession(path) {
   let firstUserMsg = null;
   const snippetParts = [];
   let snippetBudget = 4000;
+  const filePaths = new Set();
   for await (const line of rl) {
     lineCount++;
-    if (snippetBudget <= 0) continue;
     let d;
     try {
       d = JSON.parse(line);
@@ -107,13 +107,31 @@ async function readSession(path) {
       text = content;
     } else if (Array.isArray(content)) {
       for (const c of content) {
-        if (c && typeof c === "object" && c.type === "text" && c.text) {
+        if (!c || typeof c !== "object") continue;
+        if (c.type === "text" && c.text) {
           text += c.text + " ";
+        } else if (c.type === "tool_use" && c.input && filePaths.size < 60) {
+          const fp = c.input.file_path || c.input.path;
+          if (typeof fp === "string" && fp.length > 0 && fp.length < 300) {
+            filePaths.add(fp);
+          }
+          // Bash commands & search patterns often reveal subprojects via `cd
+          // /Users/.../sub` even when no file is edited — pull paths out of them.
+          for (const key of ["command", "pattern"]) {
+            const v = c.input[key];
+            if (typeof v !== "string") continue;
+            const matches = v.match(/\/(?:Users|home)\/[A-Za-z0-9._/-]+/g);
+            if (!matches) continue;
+            for (const m of matches) {
+              if (m.length < 300 && filePaths.size < 60) filePaths.add(m);
+            }
+          }
         }
       }
       text = text.trim();
     }
     if (!text) continue;
+    if (snippetBudget <= 0) continue;
     if (
       text.includes("<local-command-caveat>") ||
       text.includes("<local-command-stdout>") ||
@@ -133,6 +151,7 @@ async function readSession(path) {
     lineCount,
     firstUserMsg,
     snippet: snippetParts.join("").slice(0, 4000),
+    filePaths: Array.from(filePaths),
   };
 }
 
@@ -177,6 +196,50 @@ async function generateSummaryWithTitle(snippet, title) {
     : "";
   const prompt = `Below is the start of a Claude Code chat session${titleClause} between Carl and Claude. Write a single concise phrase (max 16 words) describing what's happening in this session.${avoidanceClause} Start with a verb in -ing form (e.g., "Building…", "Exploring…", "Designing…"). Do NOT start with a subject like "Carl", "Carl is", "The user", or "He"; the subject is implied. No preamble, no trailing period needed.\n\n<session>\n${snippet}\n</session>`;
   return callHaiku(prompt, 60);
+}
+
+// Derive a project slug from the file paths touched in a session.
+// More reliable than guessing from the session's encoded cwd (which can't
+// disambiguate "/" from "-" in path names), and works without API access.
+function deriveProjectFromPaths(filePaths) {
+  if (!filePaths || filePaths.length === 0) return null;
+  const userPaths = filePaths.filter(
+    (p) => typeof p === "string" && (p.startsWith("/Users/") || p.startsWith("/home/")),
+  );
+  if (userPaths.length === 0) return null;
+  const splits = userPaths.map((p) => p.split("/").filter(Boolean));
+  const minLen = Math.min(...splits.map((s) => s.length));
+  const common = [];
+  for (let i = 0; i < minLen; i++) {
+    const seg = splits[0][i];
+    if (splits.every((s) => s[i] === seg)) common.push(seg);
+    else break;
+  }
+  // Strip OS / home / "code" boilerplate at the head.
+  const headerSkip = new Set([
+    "Users", "home", "carl",
+    "code", "src", "Projects", "projects", "Documents", "workspace", "work",
+  ]);
+  while (common.length && headerSkip.has(common[0])) common.shift();
+  // Strip monorepo containers and language-conventional inner dirs so the
+  // first 1-2 "real" segments are the project root + sub-project.
+  const innerSkip = new Set([
+    "packages", "apps", "services", "libs", "tools",
+    "src", "lib", "test", "tests", "pkg", "cmd", "internal",
+    ".github", "scripts", "node_modules", "dist", "build", "target",
+  ]);
+  const meaningful = common.filter((s) => !innerSkip.has(s));
+  if (meaningful.length === 0) return null;
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const a = slug(meaningful[0]);
+  const raw1 = meaningful[1];
+  const b = raw1 ? slug(raw1) : null;
+  if (!b) return a || null;
+  // Skip parent prefix when the sub-project name is already specific enough
+  // on its own — a domain-style name ("packages.smallstep.com"), or one that
+  // already incorporates the parent ("smallstep-cli").
+  if (b === a || b.startsWith(a + "-") || raw1.includes(".")) return b;
+  return `${a}-${b}` || null;
 }
 
 function stripSubject(s) {
@@ -291,9 +354,22 @@ async function buildChatsPayload() {
   });
   const chats = candidates.filter((c) => c._session.firstUserMsg);
 
+  // Derive project tag from session file paths — more accurate than the
+  // encoded directory name. Falls back to a per-id home label or the parent
+  // dir's project label so every chat still gets a group key.
+  for (const c of chats) {
+    let tag = deriveProjectFromPaths(c._session.filePaths);
+    if (!tag) {
+      tag = c.project === "~"
+        ? `home-${basename(c.path, ".jsonl").slice(0, 8)}`
+        : c.project;
+    }
+    c.projectTag = tag;
+  }
+
   const groups = new Map();
   for (const c of chats) {
-    const key = c.project === "~" ? `~:${basename(c.path, ".jsonl")}` : c.cwd;
+    const key = c.projectTag || c.cwd;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
   }
@@ -301,7 +377,7 @@ async function buildChatsPayload() {
   // Initial response: cached state only — no awaits on generation work.
   const out = chats.map((c) => {
     const id = basename(c.path, ".jsonl");
-    const groupKey = c.project === "~" ? `~:${id}` : c.cwd;
+    const groupKey = c.projectTag || c.cwd;
     const members = groups.get(groupKey);
     const tkey = titleCacheKey(groupKey, members);
     const cachedSummary = cache.summaries[c.path];
@@ -314,6 +390,7 @@ async function buildChatsPayload() {
     return {
       id,
       project: c.project,
+      projectTag: c.projectTag,
       cwd: c.cwd,
       mtimeMs: c.mtimeMs,
       lineCount: c._session.lineCount,
