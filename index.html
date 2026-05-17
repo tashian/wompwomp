@@ -585,8 +585,43 @@
           const t = relTime(b.mtimeMs).toUpperCase();
           ctx.fillText(`№ ${num} · ${b.lineCount} MSG · ${t}`, x + pad, footerY);
           setLetterSpacing("0px");
+
+          // Resume pill — expanded view only, paper-archive style.
+          if (expandedKey) {
+            const btn = resumeBtnRect(b);
+            ctx.fillStyle = "rgba(255, 248, 230, 0.5)";
+            ctx.strokeStyle = "rgba(42, 36, 26, 0.45)";
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.font = "500 9px 'JetBrains Mono', ui-monospace, monospace";
+            setLetterSpacing("0.14em");
+            ctx.fillStyle = INK_MUTE;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("↻ RESUME", btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            setLetterSpacing("0px");
+          }
         }
         ctx.globalAlpha = 1;
+      }
+
+      // Resume pill rect, anchored to bottom-right of a bubble.
+      function resumeBtnRect(b) {
+        const w = 84, h = 20, pad = 10;
+        return {
+          x: b.x + b.w / 2 - pad - w,
+          y: b.y + b.h / 2 - pad - h,
+          w, h,
+        };
+      }
+      function hitResumeBtn(px, py, b) {
+        const r = resumeBtnRect(b);
+        return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
       }
 
       // Wrap text into up to maxLines, fitting within maxWidth.
@@ -932,10 +967,30 @@
       });
       canvas.addEventListener("click", (e) => {
         const hit = rectHit(e.clientX, e.clientY);
-        if (expandedKey) { collapse(); return; }
+        if (expandedKey) {
+          // Resume pill takes priority over click-to-collapse.
+          if (hit && hitResumeBtn(e.clientX, e.clientY, hit)) {
+            resumeChat(hit);
+            return;
+          }
+          collapse();
+          return;
+        }
         if (!hit) return;
         expandGroup(groupKey(hit));
       });
+
+      async function resumeChat(b) {
+        try {
+          await fetch("/api/resume", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id: b.id, cwd: b.cwd }),
+          });
+        } catch (e) {
+          console.error("resume failed", e);
+        }
+      }
       closeBtn.addEventListener("click", () => {
         if (expandedKey) collapse();
       });

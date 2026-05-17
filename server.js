@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { createReadStream } from "node:fs";
+import { spawn } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -414,6 +415,61 @@ async function buildChatsPayload() {
   return out;
 }
 
+// Pick the terminal app for `claude --resume`. Set TERMINAL_APP=iterm|terminal|
+// ghostty to override; otherwise prefer iTerm if installed, else Terminal.
+const TERMINAL_APP = (() => {
+  const requested = (process.env.TERMINAL_APP || "").trim().toLowerCase();
+  if (requested) return requested;
+  if (existsSync("/Applications/iTerm.app")) return "iterm";
+  if (existsSync("/Applications/Ghostty.app")) return "ghostty";
+  return "terminal";
+})();
+
+function appleScriptFor(app, shellCmd) {
+  // Escape for embedding inside an AppleScript double-quoted string.
+  const esc = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const escaped = esc(shellCmd);
+  switch (app) {
+    case "iterm":
+    case "iterm2":
+      return [
+        'tell application "iTerm"',
+        '  create window with default profile',
+        '  tell current session of current window',
+        `    write text "${escaped}"`,
+        '  end tell',
+        '  activate',
+        'end tell',
+      ].join("\n");
+    case "ghostty":
+      // Ghostty doesn't have rich AppleScript; open a new window and paste via
+      // System Events. Fall back to Terminal-style script if user prefers.
+      return [
+        'tell application "Ghostty" to activate',
+        'delay 0.4',
+        'tell application "System Events" to keystroke "n" using {command down}',
+        'delay 0.5',
+        `tell application "System Events" to keystroke "${escaped}"`,
+        'tell application "System Events" to key code 36',
+      ].join("\n");
+    case "terminal":
+    default:
+      return [
+        `tell application "Terminal" to do script "${escaped}"`,
+        'tell application "Terminal" to activate',
+      ].join("\n");
+  }
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
 const INDEX_HTML = readFileSync(join(__dirname, "index.html"), "utf8");
 
 const server = createServer(async (req, res) => {
@@ -429,6 +485,20 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ chats: payload, hasApiKey: Boolean(API_KEY) }));
       return;
     }
+    if (req.url === "/api/resume" && req.method === "POST") {
+      const body = await readBody(req);
+      const { id, cwd } = JSON.parse(body || "{}");
+      if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
+        res.writeHead(400); res.end("bad id");
+        return;
+      }
+      const safeCwd = typeof cwd === "string" && existsSync(cwd) ? cwd : homedir();
+      const shellCmd = `cd ${JSON.stringify(safeCwd)} && claude --resume ${JSON.stringify(id)}`;
+      const script = appleScriptFor(TERMINAL_APP, shellCmd);
+      spawn("osascript", ["-e", script], { detached: true, stdio: "ignore" }).unref();
+      res.writeHead(204); res.end();
+      return;
+    }
     res.writeHead(404);
     res.end("not found");
   } catch (err) {
@@ -440,5 +510,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`chat-bubbles → http://localhost:${PORT}`);
+  console.log(`resume target → ${TERMINAL_APP} (override with TERMINAL_APP=iterm|terminal|ghostty)`);
   if (!API_KEY) console.log("(no ANTHROPIC_API_KEY — using heuristic summaries)");
 });
