@@ -345,9 +345,13 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-// Build the response and kick off background title/summary generation.
-// Returns immediately with whatever's already cached; the rest fills in over
-// subsequent /api/chats polls.
+// Snapshot of the last `/api/chats` walk so per-card requests don't have to
+// re-scan the filesystem. Refreshed every /api/chats.
+let lastChats = null;
+let lastGroups = null;
+
+// Build the response with cached state only. Per-card generation happens via
+// `/api/chat/:id` requests fired by the frontend.
 async function buildChatsPayload() {
   const candidates = await listRecentChats(Infinity);
   await mapLimit(candidates, 8, async (c) => {
@@ -401,18 +405,23 @@ async function buildChatsPayload() {
     };
   });
 
-  // Kick off background generation. Titles first per group, then per-member
-  // summaries with the title in context. Don't await — the response already left.
-  (async () => {
-    await mapLimit(Array.from(groups.entries()), CONCURRENCY, async ([groupKey, members]) => {
-      const title = await ensureTitleAsync(groupKey, members);
-      await mapLimit(members, 3, async (chat) => {
-        await ensureSummaryAsync(chat, title);
-      });
-    });
-  })().catch((e) => console.error("background generation", e));
-
+  lastChats = chats;
+  lastGroups = groups;
   return out;
+}
+
+// Handle a per-card generation request: ensure the title for this chat's
+// group (cached or generated), then ensure this chat's summary with the
+// title in context. Returns { groupKey, title, summary }.
+async function buildOneChatPayload(id) {
+  if (!lastChats) await buildChatsPayload();
+  const chat = lastChats.find((c) => basename(c.path, ".jsonl") === id);
+  if (!chat) return null;
+  const groupKey = chat.projectTag || chat.cwd;
+  const members = lastGroups.get(groupKey) || [chat];
+  const title = await ensureTitleAsync(groupKey, members);
+  const rawSummary = await ensureSummaryAsync(chat, title);
+  return { groupKey, title, summary: stripSubject(rawSummary) };
 }
 
 // Pick the terminal app for `claude --resume`. Set TERMINAL_APP=iterm|terminal|
@@ -470,19 +479,44 @@ function readBody(req) {
   });
 }
 
-const INDEX_HTML = readFileSync(join(__dirname, "index.html"), "utf8");
+const INDEX_PATH = join(__dirname, "index.html");
 
 const server = createServer(async (req, res) => {
   try {
     if (req.url === "/" || req.url === "/index.html") {
+      // Read per request so HTML edits show up without restarting the server.
+      const html = await readFile(INDEX_PATH, "utf8");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(INDEX_HTML);
+      res.end(html);
       return;
     }
     if (req.url === "/api/chats") {
       const payload = await buildChatsPayload();
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ chats: payload, hasApiKey: Boolean(API_KEY) }));
+      return;
+    }
+    if (req.url.startsWith("/api/chat/") && req.method === "GET") {
+      const id = decodeURIComponent(req.url.slice("/api/chat/".length));
+      if (!/^[a-zA-Z0-9-]+$/.test(id)) {
+        res.writeHead(400); res.end("bad id");
+        return;
+      }
+      const payload = await buildOneChatPayload(id);
+      if (!payload) { res.writeHead(404); res.end("not found"); return; }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+      return;
+    }
+    if (req.url === "/api/cache/clear" && req.method === "POST") {
+      cache = { summaries: {}, groupTitles: {} };
+      lastChats = null;
+      lastGroups = null;
+      titleInFlight.clear();
+      summaryInFlight.clear();
+      await saveCache();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
     if (req.url === "/api/resume" && req.method === "POST") {

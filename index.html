@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
     <style>
@@ -238,6 +238,7 @@
       <span class="spacer"></span>
       <span class="status" id="meta">gathering specimens…</span>
       <button id="refresh">refresh</button>
+      <button id="clear-cache" title="discard cached titles and summaries and regenerate">clear cache</button>
       <button id="close" title="close">× close</button>
     </header>
 
@@ -258,6 +259,7 @@
       const ctx = canvas.getContext("2d");
       const meta = document.getElementById("meta");
       const refreshBtn = document.getElementById("refresh");
+      const clearCacheBtn = document.getElementById("clear-cache");
       const closeBtn = document.getElementById("close");
       const header = document.getElementById("header");
 
@@ -285,8 +287,6 @@
       let expandedKey = null;
       let savedOverview = null;
       let lastMeta = "";
-      // Poll loop while titles/summaries are still being generated.
-      let pollTimer = null;
       // Expanded-view layout + scroll state.
       let expandedLayout = null;
       let expandedScrollOffset = 0;
@@ -331,6 +331,27 @@
         return r;
       }
       function paletteFor(s) { return PALETTE[hash32(s) % PALETTE.length]; }
+      // Blend a hex toward its own luminance. amt 0 = original, 1 = fully gray.
+      function desaturateHex(hex, amt) {
+        const h = hex.replace("#", "");
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const mix = (c) => Math.round(c + (y - c) * amt);
+        const to = (v) => Math.max(0, Math.min(255, mix(v))).toString(16).padStart(2, "0");
+        return "#" + to(r) + to(g) + to(b);
+      }
+      // Linear blend of two hex colors. t=0 → a, t=1 → b.
+      function mixHex(a, b, t) {
+        const ch = (s, i) => parseInt(s.replace("#", "").slice(i, i + 2), 16);
+        const m = (x, y) => Math.round(x + (y - x) * t);
+        const to = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0");
+        return "#"
+          + to(m(ch(a, 0), ch(b, 0)))
+          + to(m(ch(a, 2), ch(b, 2)))
+          + to(m(ch(a, 4), ch(b, 4)));
+      }
       function specimenNumberFor(id) {
         return String((hash32(id) % 999) + 1).padStart(3, "0");
       }
@@ -488,11 +509,28 @@
         const cornerR = 4;
         // Render oldest first → newest on top.
         const list = visibleBubbles().slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
-        // Age fade: newer chats render fully saturated, older ones desaturate
-        // and lose glow/border emphasis. Square-root keeps recent stuff vivid
-        // while pushing 2+ week-old chats well into the background.
+        // Group color is desaturated by the age of the group's newest chat —
+        // a long-dormant cluster fades toward gray together, while a still-active
+        // group keeps its full ink even if it contains old members.
         const now = Date.now();
         const FADE_DAYS = 21;
+        const groupNewest = new Map();
+        for (const b of bubbles) {
+          const k = groupKey(b);
+          const cur = groupNewest.get(k) ?? 0;
+          if (b.mtimeMs > cur) groupNewest.set(k, b.mtimeMs);
+        }
+        // Cache per-group ink for both the bubbles and the group label pass.
+        const groupInk = new Map();
+        for (const [k, newest] of groupNewest) {
+          const ageDays = (now - newest) / 86400000;
+          const groupSat = Math.min(1, Math.sqrt(Math.max(0, ageDays) / FADE_DAYS));
+          // Look up palette ink via any member.
+          const member = bubbles.find((b) => groupKey(b) === k);
+          if (!member) continue;
+          groupInk.set(k, desaturateHex(member.pal.ink, groupSat * 0.85));
+        }
+
         for (const b of list) {
           ctx.globalAlpha = b.alpha ?? 1;
           const ageDays = (now - b.mtimeMs) / 86400000;
@@ -500,7 +538,7 @@
           const x = b.x - b.w / 2;
           const y = b.y - b.h / 2;
           const hovered = hoveredId === b.id && !expandedKey;
-          const ink = b.pal.ink;
+          const ink = groupInk.get(groupKey(b)) || b.pal.ink;
 
           // Soft paper drop shadow.
           ctx.shadowColor = "rgba(40, 28, 10, 0.18)";
@@ -508,10 +546,11 @@
           ctx.shadowOffsetX = 0;
           ctx.shadowOffsetY = hovered ? 4 : 2;
 
-          // Card body — tinted cream paper.
+          // Card body — paper tinted with the cluster ink so the hue is
+          // visible across the whole card.
           ctx.beginPath();
           ctx.roundRect(x, y, b.w, b.h, cornerR);
-          ctx.fillStyle = PAPER_CARD;
+          ctx.fillStyle = mixHex(PAPER_CARD, ink, 0.22);
           ctx.fill();
 
           // Reset shadow before strokes/text so they don't smear.
@@ -519,8 +558,8 @@
           ctx.shadowBlur = 0;
           ctx.shadowOffsetY = 0;
 
-          // Hairline border in the cluster's ink. Older chats fade out gently
-          // so the recent specimens read as more vivid on the page.
+          // Hairline border in the cluster's ink, slightly stronger than the
+          // fill so the card edge stays crisp against the page.
           ctx.beginPath();
           ctx.roundRect(x + 0.5, y + 0.5, b.w - 1, b.h - 1, cornerR);
           ctx.lineWidth = hovered ? 1.6 : 1;
@@ -529,47 +568,19 @@
           ctx.stroke();
           ctx.globalAlpha = b.alpha ?? 1;
 
-          // Eyebrow underline (small accent rule below the eyebrow text).
-          ctx.fillStyle = ink;
-          ctx.globalAlpha = (b.alpha ?? 1) * 0.85;
-          ctx.fillRect(x + pad, y + pad + 14, 18, 1);
-          ctx.globalAlpha = b.alpha ?? 1;
-
-          // Top-right corner marker — small filled square in cluster ink.
-          ctx.fillStyle = ink;
-          ctx.fillRect(x + b.w - pad - 5, y + pad - 1, 5, 5);
-
           // --- Text ---
           ctx.textAlign = "left";
           ctx.textBaseline = "top";
           const innerW = b.w - pad * 2;
 
-          // Eyebrow — tracked small-caps family name + "group".
-          ctx.font = "500 9px 'JetBrains Mono', ui-monospace, monospace";
-          setLetterSpacing("0.18em");
-          ctx.fillStyle = ink;
-          ctx.globalAlpha = (b.alpha ?? 1) * 0.9;
-          const eyebrow = (b.pal.name + " · group").toUpperCase();
-          ctx.fillText(eyebrow, x + pad, y + pad);
-          ctx.globalAlpha = b.alpha ?? 1;
-          setLetterSpacing("0px");
-
-          // Title — Fraunces italic, ink, up to 2 lines.
-          let cy = y + pad + 22;
-          ctx.font = "italic 500 15px 'Fraunces', Georgia, serif";
+          // Summary — starts at top of card (no per-bubble title anymore;
+          // the group title is rendered once per cluster). Fraunces regular.
+          let cy = y + pad;
+          ctx.font = "400 13px 'Fraunces', Georgia, serif";
           ctx.fillStyle = INK;
-          const label = b.groupTitle || b.project;
-          const titleLines = wrapLines(label, innerW, 2, true);
-          ctx.fillText(titleLines[0] || "", x + pad, cy);
-          if (titleLines[1]) ctx.fillText(titleLines[1], x + pad, cy + 18);
-          cy += titleLines[1] ? 38 : 22;
-
-          // Summary — Fraunces regular, muted ink.
-          ctx.font = "400 12px 'Fraunces', Georgia, serif";
-          ctx.fillStyle = INK_MUTE;
           const footerH = 16;
           const summaryArea = b.h - (cy - y) - pad - footerH;
-          const lineH = 15;
+          const lineH = 16;
           const maxLines = Math.max(1, Math.floor(summaryArea / lineH));
           const lines = wrapLines(b.summary || "", innerW, maxLines);
           for (let i = 0; i < lines.length; i++) {
@@ -585,6 +596,9 @@
           const t = relTime(b.mtimeMs).toUpperCase();
           ctx.fillText(`№ ${num} · ${b.lineCount} MSG · ${t}`, x + pad, footerY);
           setLetterSpacing("0px");
+
+          // Group title is rendered separately after the bubble loop so it
+          // appears once per cluster, not once per bubble.
 
           // Resume pill — expanded view only, paper-archive style.
           if (expandedKey) {
@@ -607,6 +621,49 @@
             setLetterSpacing("0px");
           }
         }
+
+        // One title per cluster — rendered above the cluster's topmost
+        // bubble, in the group's (desaturated) ink. Skipped in expanded
+        // view since the title shows in the header chrome.
+        if (!expandedKey) {
+          const groupBounds = new Map(); // key -> { minX, maxX, minY, title, alphaAvg }
+          for (const b of bubbles) {
+            if ((b.alpha ?? 1) <= 0.01) continue;
+            const k = groupKey(b);
+            const top = b.y - b.h / 2;
+            const left = b.x - b.w / 2;
+            const right = b.x + b.w / 2;
+            let g = groupBounds.get(k);
+            if (!g) {
+              g = { minX: left, maxX: right, minY: top, title: b.groupTitle, alphaSum: 0, count: 0 };
+              groupBounds.set(k, g);
+            }
+            if (left < g.minX) g.minX = left;
+            if (right > g.maxX) g.maxX = right;
+            if (top < g.minY) g.minY = top;
+            if (b.groupTitle && !g.title) g.title = b.groupTitle;
+            g.alphaSum += b.alpha ?? 1;
+            g.count++;
+          }
+          ctx.textAlign = "center";
+          ctx.textBaseline = "alphabetic";
+          for (const [k, g] of groupBounds) {
+            const title = g.title;
+            if (!title) continue;
+            const ink = groupInk.get(k) || INK;
+            const cx = (g.minX + g.maxX) / 2;
+            const cy = g.minY - 10;
+            ctx.globalAlpha = (g.alphaSum / Math.max(1, g.count)) * 0.95;
+            ctx.font = "600 16px 'Inter Tight', system-ui, sans-serif";
+            setLetterSpacing("-0.005em");
+            ctx.fillStyle = ink;
+            ctx.fillText(title, cx, cy);
+            setLetterSpacing("0px");
+          }
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+        }
+
         ctx.globalAlpha = 1;
       }
 
@@ -871,7 +928,7 @@
           lastMeta =
             `${data.chats.length} specimens<span class="dot"></span>${tag}<span class="dot"></span>${ms}ms`;
           if (!expandedKey) updatePendingMeta(data.chats);
-          startPollingIfPending(data.chats);
+          hydrateAll();
         } catch (e) {
           meta.textContent = "error: " + e.message;
         } finally {
@@ -901,38 +958,60 @@
           `${chats.length} specimens<span class="dot"></span>generating ${parts.join(" + ")}…`;
       }
 
-      function startPollingIfPending(chats) {
-        const { t, s } = pendingCounts(chats);
-        if (t === 0 && s === 0) return;
-        if (pollTimer) clearInterval(pollTimer);
-        pollTimer = setInterval(pollOnce, 1500);
+      // Per-card hydration: fire /api/chat/:id for each bubble missing
+      // title or summary, through a small worker pool. The server generates
+      // the group's title first (deduped across concurrent requests) and
+      // then this card's summary with the title as context.
+      async function hydrateAll() {
+        const queue = bubbles
+          .filter((b) => !b.groupTitle || !b.summary)
+          .map((b) => b.id);
+        if (queue.length === 0) {
+          if (!expandedKey) {
+            const pendingChats = bubbles.map((b) => ({
+              groupTitle: b.groupTitle,
+              summary: b.summary,
+            }));
+            updatePendingMeta(pendingChats);
+          }
+          return;
+        }
+        const WORKERS = 4;
+        await Promise.all(Array.from({ length: WORKERS }, async () => {
+          while (queue.length > 0) {
+            const id = queue.shift();
+            await hydrateOne(id);
+          }
+        }));
       }
 
-      async function pollOnce() {
+      async function hydrateOne(id) {
         try {
-          const res = await fetch("/api/chats");
+          const res = await fetch(`/api/chat/${encodeURIComponent(id)}`);
+          if (!res.ok) return;
           const data = await res.json();
           let changed = false;
-          for (const c of data.chats) {
-            const b = bubbles.find((x) => x.id === c.id);
-            if (!b) continue;
-            if (c.groupTitle && c.groupTitle !== b.groupTitle) {
-              b.groupTitle = c.groupTitle;
+          for (const b of bubbles) {
+            if (data.groupKey && groupKey(b) === data.groupKey && data.title && b.groupTitle !== data.title) {
+              b.groupTitle = data.title;
               changed = true;
             }
-            if (c.summary && c.summary !== b.summary) {
-              b.summary = c.summary;
+            if (b.id === id && data.summary && b.summary !== data.summary) {
+              b.summary = data.summary;
               changed = true;
             }
           }
           if (changed) draw();
-          if (!expandedKey) updatePendingMeta(data.chats);
-          const { t, s } = pendingCounts(data.chats);
-          if (t === 0 && s === 0) {
-            clearInterval(pollTimer);
-            pollTimer = null;
+          if (!expandedKey) {
+            const pendingChats = bubbles.map((b) => ({
+              groupTitle: b.groupTitle,
+              summary: b.summary,
+            }));
+            updatePendingMeta(pendingChats);
           }
-        } catch {}
+        } catch (e) {
+          console.error("hydrate", id, e);
+        }
       }
 
       canvas.addEventListener("wheel", (e) => {
@@ -996,6 +1075,18 @@
       });
 
       refreshBtn.addEventListener("click", load);
+      clearCacheBtn.addEventListener("click", async () => {
+        if (!confirm("Clear all cached titles and summaries? They'll be regenerated.")) return;
+        clearCacheBtn.disabled = true;
+        try {
+          await fetch("/api/cache/clear", { method: "POST" });
+          await load();
+        } catch (e) {
+          console.error("clear cache failed", e);
+        } finally {
+          clearCacheBtn.disabled = false;
+        }
+      });
       resize();
       load();
     </script>
